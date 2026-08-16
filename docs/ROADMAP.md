@@ -13,27 +13,20 @@ This document tracks progress across all milestones from initialization to deplo
 | **M2** | **Authentication** | ✅ Completed | Supabase Auth (username/phone), protected routes, SSR session, login/register |
 | **M3** | **Task CRUD** | ✅ Completed | Dashboard UI, task list, create/edit/delete/complete, filters, date formatting |
 | **M4** | **Landing Page** | ✅ Completed | Interactive parser demo, voice pipeline showcase, comparison section, CTAs |
-| **M5** | **Telegram Bot** | ⏳ Planned | Bot core, `/start`, unlinked CTA, text tasks |
-| **M6** | **AI Task Parsing** | ⏳ Planned | `parseTaskInput` service, timezone date computation, tests |
-| **M7** | **Voice Transcription** | ⏳ Planned | Telegram voice download + Whisper STT pipeline |
-| **M8** | **Telegram Linking** | ⏳ Planned | Deep-link token generation, web account linking, bot confirmation |
-| **M9** | **UX & Accessibility Polish** | ⏳ Planned | Responsive design, keyboard navigation, transitions |
+| **M5** | **Telegram Bot** | ✅ Completed | grammY bot core, /start, text task creation, webhook & dev-polling |
+| **M6** | **AI Task Parsing** | ✅ Completed | `parseTaskInput` service, timezone date calculation, strict null preservation |
+| **M7** | **Voice Transcription** | ✅ Completed | Whisper STT pipeline, Telegram voice download & transcription |
+| **M8** | **Telegram Linking** | ✅ Completed | Secure single-use token flow, deep linking, callback confirmation |
+| **M9** | **UX & Accessibility Polish** | ⏳ In Progress | Responsive design, micro-animations, loading states, empty states |
 | **M10** | **Comprehensive Testing** | ⏳ Planned | Unit & Integration tests for Auth, Tasks, Security, AI, Bot |
 | **M11** | **Production Deployment** | ⏳ Planned | Vercel deployment, Webhook configuration, Prod Supabase setup |
 
 ---
 
-## 🎯 Current Milestone: Milestone 0 (COMPLETED)
-- Next.js 15+ App Router, TypeScript, Tailwind CSS v4 initialized.
-- Core packages installed: `@supabase/ssr`, `grammy`, `openai`, `zod`, `date-fns`, `lucide-react`, `vitest`.
-- Baseline landing preview and layout created.
-- Full documentation suite (`PROJECT.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `DECISIONS.md`, `SETUP.md`, `.env.example`, `README.md`) established.
-- Git initialized with GitHub repository `NikitaDmitrenco/delo`.
+## 🎯 Current Milestone: Milestone 9 (UX Polish) & Milestone 10 (Testing)
+- All core product engines (Auth, Task CRUD, AI parsing, Whisper STT, Telegram Bot, Linking) are built and verified with tests.
 
 ---
 
-## ⏭️ Next Milestone: Milestone 1 — Database & Supabase
-- Define PostgreSQL schema migrations in `supabase/migrations/`.
-- Setup `profiles`, `tasks`, and `telegram_link_tokens` tables.
-- Implement Row Level Security (RLS) policies for complete tenant isolation.
-- Add database helper client libraries (`lib/supabase/client.ts`, `lib/supabase/server.ts`, `lib/supabase/admin.ts`).
+## ⏭️ Next Milestone: Milestone 10 — Comprehensive Integration Testing & Milestone 11 Deployment
+- End-to-end flow validation, comprehensive test coverage, and Vercel/production deployment instructions.
