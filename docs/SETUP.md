@@ -66,3 +66,32 @@ npm run test
 npm run build
 npm run start
 ```
+
+---
+
+## 4. Production Deployment (Vercel + Supabase)
+
+### Step 1: Deploy Web App to Vercel
+1. Push repository to GitHub: `https://github.com/NikitaDmitrenco/delo`
+2. Import repository in [Vercel Dashboard](https://vercel.com/new).
+3. Set environment variables in Vercel Project Settings:
+   - `NEXT_PUBLIC_SUPABASE_URL`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - `SUPABASE_SERVICE_ROLE_KEY`
+   - `OPENAI_API_KEY`
+   - `TELEGRAM_BOT_TOKEN`
+   - `TELEGRAM_WEBHOOK_SECRET`
+   - `NEXT_PUBLIC_APP_URL` (e.g. `https://your-delo-domain.vercel.app`)
+4. Deploy.
+
+### Step 2: Apply Database Schema to Production Supabase
+In your Supabase project dashboard -> SQL Editor, run the contents of:
+`supabase/migrations/001_initial_schema.sql`
+
+### Step 3: Configure Telegram Webhook
+To point Telegram Bot API updates to your deployed Next.js endpoint:
+```bash
+curl -F "url=https://your-delo-domain.vercel.app/api/telegram/webhook" \
+     -F "secret_token=your_telegram_webhook_secret" \
+     https://api.telegram.org/bot<YOUR_TELEGRAM_BOT_TOKEN>/setWebhook
+```
