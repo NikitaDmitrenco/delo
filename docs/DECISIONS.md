@@ -44,3 +44,16 @@ This document records all significant technical and design decisions made throug
   - AI is explicitly instructed **never to invent a deadline** if not mentioned or implied.
 - **Alternatives Considered**:
   - *Server-side regex parsing*: Brittle with complex Russian natural language variations.
+
+---
+
+## ADR-004: Supabase Row Level Security (RLS) & Client Architecture
+- **Date**: 2026-08-16
+- **Status**: Accepted
+- **Context**: Strict multi-tenant data isolation is required so that no user can access or modify another user's tasks or profile.
+- **Decision**:
+  - Enforce Postgres RLS on `profiles`, `tasks`, and `telegram_link_tokens`.
+  - Provide typed client constructors: `lib/supabase/client.ts` (browser), `lib/supabase/server.ts` (SSR with async cookies), and `lib/supabase/admin.ts` (service_role for Telegram bot and background jobs).
+  - All web mutations must pass through authenticated user sessions matching `auth.uid() = user_id`.
+- **Alternatives Considered**:
+  - *Application-level filtering*: Risk of accidental data leakage if an endpoint omits `where user_id = ...`.
