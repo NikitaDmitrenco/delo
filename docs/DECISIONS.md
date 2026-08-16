@@ -57,3 +57,17 @@ This document records all significant technical and design decisions made throug
   - All web mutations must pass through authenticated user sessions matching `auth.uid() = user_id`.
 - **Alternatives Considered**:
   - *Application-level filtering*: Risk of accidental data leakage if an endpoint omits `where user_id = ...`.
+
+---
+
+## ADR-005: Flexible Authentication with Username & Phone
+- **Date**: 2026-08-16
+- **Status**: Accepted
+- **Context**: Users should be able to log in using either their `username` or `phone number` and password, while leveraging Supabase Auth's robust password hashing and session cookies.
+- **Decision**:
+  - Store `username`, `phone`, and `timezone` in `profiles`.
+  - Use internal synthetic email mapping (`username@delo.local`) for Supabase Auth accounts.
+  - On login, resolve the user's identifier (phone lookup -> username) securely before verifying credentials through `supabase.auth.signInWithPassword`.
+  - Provide Next.js proxy middleware for seamless session refresh and route protection.
+- **Alternatives Considered**:
+  - *Custom JWT / bcrypt solution*: Supabase Auth provides battle-tested session management, RLS integration with `auth.uid()`, and token rotation out-of-the-box.

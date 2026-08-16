@@ -10,7 +10,7 @@ This document tracks progress across all milestones from initialization to deplo
 | :--- | :--- | :--- | :--- |
 | **M0** | **Project Foundation** | ✅ Completed | Initialized Next.js 15, TS, Tailwind CSS, Base Shell, Vitest, Docs, Git Repo |
 | **M1** | **Database & Supabase** | ✅ Completed | Schemas, Migrations (001_initial_schema.sql), RLS policies, client helpers |
-| **M2** | **Authentication** | ⏳ Planned | Supabase Auth (username/phone), protected routes, SSR session |
+| **M2** | **Authentication** | ✅ Completed | Supabase Auth (username/phone), protected routes, SSR session, login/register |
 | **M3** | **Task CRUD** | ⏳ Planned | Dashboard UI, task list, create/edit/delete/complete |
 | **M4** | **Landing Page** | ⏳ Planned | Full interactive landing page and auth experience |
 | **M5** | **Telegram Bot** | ⏳ Planned | Bot core, `/start`, unlinked CTA, text tasks |
