@@ -11,6 +11,17 @@ const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 export const bot = new Bot(token);
 
 /**
+ * Escapes HTML characters for safe Telegram HTML formatting.
+ */
+export function escapeHtml(str: string): string {
+  if (!str) return "";
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+/**
  * Normalizes phone numbers to digits only for reliable database matching.
  */
 export function normalizePhone(rawPhone: string): string {
@@ -78,10 +89,11 @@ export function setupBot(botInstance: Bot = bot) {
 
       if (profile) {
         await ctx.reply(
-          `Привет, ${from.first_name || "друг"}! Я Delo.\n\n` +
+          `Привет, ${escapeHtml(from.first_name || "друг")}! Я Delo.\n\n` +
             `Просто напиши или скажи голосом, что нужно сделать — я сам определю задачу и дедлайн.`,
           {
             reply_markup: { remove_keyboard: true },
+            parse_mode: "HTML",
           }
         );
         return;
@@ -117,16 +129,16 @@ export function setupBot(botInstance: Bot = bot) {
 
       const text = isHttps
         ? `Привет! Чтобы пользоваться Delo, привяжите аккаунт одним из двух способов:\n\n` +
-          `1. Нажмите кнопку внизу **«📱 Поделиться номером для привязки»** (если регистрировались на сайте с номером телефона).\n` +
+          `1. Нажмите кнопку внизу <b>«📱 Поделиться номером для привязки»</b> (если регистрировались на сайте с номером телефона).\n` +
           `2. Либо перейдите по кнопке ниже и создайте аккаунт на сайте.`
         : `Привет! Чтобы пользоваться Delo, привяжите аккаунт:\n\n` +
-          `1. Нажмите кнопку **«📱 Поделиться номером для привязки»** внизу экрана.\n` +
-          `2. Либо перейдите по ссылке: [Создать аккаунт на сайте](${registerUrl})\n\n` +
+          `1. Нажмите кнопку <b>«📱 Поделиться номером для привязки»</b> внизу экрана.\n` +
+          `2. Либо перейдите по ссылке: <a href="${registerUrl}">Создать аккаунт на сайте</a>\n\n` +
           `После регистрации нажмите «Я создал аккаунт» ниже.`;
 
       await ctx.reply(text, {
         reply_markup: contactKeyboard,
-        parse_mode: "Markdown",
+        parse_mode: "HTML",
       });
 
       // Send inline button for verification
@@ -155,14 +167,17 @@ export function setupBot(botInstance: Bot = bot) {
       const profile = await findProfile(telegramUserId, phoneNumber);
 
       if (profile) {
+        const usernameDisplay = profile.username ? `@${escapeHtml(profile.username)}` : "пользователь";
+        const phoneDisplay = escapeHtml(profile.phone || phoneNumber);
+
         await ctx.reply(
-          `✅ **Аккаунт найден и успешно привязан!**\n\n` +
-            `👤 Пользователь: **@${profile.username || "пользователь"}**\n` +
-            `📱 Телефон: **${profile.phone || phoneNumber}**\n\n` +
+          `✅ <b>Аккаунт найден и успешно привязан!</b>\n\n` +
+            `👤 Пользователь: <b>${usernameDisplay}</b>\n` +
+            `📱 Телефон: <b>${phoneDisplay}</b>\n\n` +
             `Теперь ты можешь отправлять мне задачи текстом или голосовым сообщением.`,
           {
             reply_markup: { remove_keyboard: true },
-            parse_mode: "Markdown",
+            parse_mode: "HTML",
           }
         );
       } else {
@@ -170,12 +185,12 @@ export function setupBot(botInstance: Bot = bot) {
         const registerUrl = `${appUrl}/register?token=${linkingToken}`;
 
         await ctx.reply(
-          `❌ Пользователь с номером **${phoneNumber}** пока не зарегистрирован на сайте.\n\n` +
+          `❌ Пользователь с номером <b>${escapeHtml(phoneNumber)}</b> пока не зарегистрирован на сайте.\n\n` +
             `Создай аккаунт с этим номером телефона по ссылке:\n` +
-            `👉 [Зарегистрироваться в Delo](${registerUrl})`,
+            `👉 <a href="${registerUrl}">Зарегистрироваться в Delo</a>`,
           {
             reply_markup: { remove_keyboard: true },
-            parse_mode: "Markdown",
+            parse_mode: "HTML",
           }
         );
       }
@@ -198,16 +213,20 @@ export function setupBot(botInstance: Bot = bot) {
       if (profile) {
         await ctx.answerCallbackQuery({ text: "Аккаунт успешно подключен!" });
         await ctx.reply(
-          `✅ Отлично! Твой аккаунт подключён.\n\n` +
+          `✅ <b>Отлично! Твой аккаунт подключён.</b>\n\n` +
             `Теперь можешь отправить мне задачу текстом или голосовым сообщением.`,
-          { reply_markup: { remove_keyboard: true } }
+          {
+            reply_markup: { remove_keyboard: true },
+            parse_mode: "HTML",
+          }
         );
       } else {
         await ctx.answerCallbackQuery({ text: "Аккаунт пока не найден" });
         await ctx.reply(
           `Я пока не вижу созданного аккаунта.\n` +
-            `• Нажми кнопку **«📱 Поделиться номером для привязки»** внизу экрана\n` +
-            `• Либо убедись, что зарегистрировался по ссылке из этого чата.`
+            `• Нажми кнопку <b>«📱 Поделиться номером для привязки»</b> внизу экрана\n` +
+            `• Либо убедись, что зарегистрировался по ссылке из этого чата.`,
+          { parse_mode: "HTML" }
         );
       }
     } catch (error) {
@@ -234,8 +253,8 @@ export function setupBot(botInstance: Bot = bot) {
       if (!profile) {
         await ctx.reply(
           `Сначала нужно привязать аккаунт Delo.\n` +
-            `Нажми кнопку **«📱 Поделиться номером для привязки»** или отправь /start для подключения.`,
-          { parse_mode: "Markdown" }
+            `Нажми кнопку <b>«📱 Поделиться номером для привязки»</b> или отправь /start для подключения.`,
+          { parse_mode: "HTML" }
         );
         return;
       }
@@ -275,10 +294,10 @@ export function setupBot(botInstance: Bot = bot) {
       // 4. Send formatted confirmation
       const formattedDate = formatDeadline(parsed.deadline);
       await ctx.reply(
-        `✅ Задача добавлена\n\n` +
-          `📌 **${parsed.title}**\n` +
-          `⏱ Дедлайн: ${formattedDate}`,
-        { parse_mode: "Markdown" }
+        `✅ <b>Задача добавлена</b>\n\n` +
+          `📌 <b>${escapeHtml(parsed.title)}</b>\n` +
+          `⏱ Дедлайн: <b>${escapeHtml(formattedDate)}</b>`,
+        { parse_mode: "HTML" }
       );
     } catch (error: any) {
       console.error("Bot text handling error:", error);
@@ -299,8 +318,8 @@ export function setupBot(botInstance: Bot = bot) {
       if (!profile) {
         await ctx.reply(
           `Сначала нужно привязать аккаунт Delo.\n` +
-            `Нажми кнопку **«📱 Поделиться номером для привязки»** или отправь /start для подключения.`,
-          { parse_mode: "Markdown" }
+            `Нажми кнопку <b>«📱 Поделиться номером для привязки»</b> или отправь /start для подключения.`,
+          { parse_mode: "HTML" }
         );
         return;
       }
@@ -363,11 +382,11 @@ export function setupBot(botInstance: Bot = bot) {
       // 6. Send confirmation
       const formattedDate = formatDeadline(parsed.deadline);
       await ctx.reply(
-        `✅ Задача добавлена из голосового сообщения\n\n` +
-          `🎤 _«${transcript}»_\n\n` +
-          `📌 **${parsed.title}**\n` +
-          `⏱ Дедлайн: ${formattedDate}`,
-        { parse_mode: "Markdown" }
+        `✅ <b>Задача добавлена из голосового сообщения</b>\n\n` +
+          `🎤 <i>«${escapeHtml(transcript)}»</i>\n\n` +
+          `📌 <b>${escapeHtml(parsed.title)}</b>\n` +
+          `⏱ Дедлайн: <b>${escapeHtml(formattedDate)}</b>`,
+        { parse_mode: "HTML" }
       );
     } catch (error: any) {
       console.error("Bot voice handling error:", error);
