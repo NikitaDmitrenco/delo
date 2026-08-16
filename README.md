@@ -1,36 +1,79 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# DELO — Turn Thoughts into Done
 
-## Getting Started
+> **Delo** is an AI-powered minimalist task manager that enables users to create and organize tasks seamlessly via Telegram (text & voice) and a modern web interface.
 
-First, run the development server:
+---
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## ⚡ Key Highlights
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- 🎙️ **Voice & Text Ingestion**: Send a voice note or type a message in Telegram. Delo automatically transcribes and parses it.
+- 🧠 **Context & Timezone Aware AI**: Extracts task title and deadline relative to your local timezone (e.g. `Europe/Chisinau`).
+- 🎯 **No Invented Deadlines**: If no deadline is stated or implied, none is added (`deadline: null`).
+- 🔐 **Isolated & Secure**: Supabase Auth with PostgreSQL Row Level Security (RLS) ensures strict tenant data isolation.
+- 📱 **Telegram ↔ Web Linking**: Secure single-use cryptographic token flow binds Telegram accounts to web accounts with deep linking.
+- ✨ **Minimalist Design**: Clean typography, high whitespace, fast interactions, zero clutter.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 🛠️ Tech Stack
 
-## Learn More
+- **Frontend**: Next.js 15+ (App Router), React 19, TypeScript, Tailwind CSS v4, Lucide Icons
+- **Backend & Storage**: Supabase (PostgreSQL, Supabase Auth, Row Level Security)
+- **Telegram Bot**: grammY (TypeScript Bot Framework with dual Webhook & Local Polling modes)
+- **AI & NLP**: OpenAI GPT-4o-mini (Structured Outputs / JSON schema) + OpenAI Whisper (Audio STT)
+- **Validation & Dates**: Zod, Date-fns, Date-fns-tz
+- **Testing**: Vitest
 
-To learn more about Next.js, take a look at the following resources:
+---
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 📂 Project Documentation
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Detailed documentation is available in the [`/docs`](./docs) directory:
 
-## Deploy on Vercel
+- [📄 `docs/PROJECT.md`](./docs/PROJECT.md) — Product overview, user flows, and core principles.
+- [🏛️ `docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — System architecture, data schema, AI pipeline, security model.
+- [🗺️ `docs/ROADMAP.md`](./docs/ROADMAP.md) — Milestones progress and upcoming features.
+- [📝 `docs/DECISIONS.md`](./docs/DECISIONS.md) — Architectural Decision Records (ADRs).
+- [🚀 `docs/SETUP.md`](./docs/SETUP.md) — Local development and environment setup guide.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+---
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## 🚀 Quick Start
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/NikitaDmitrenco/delo.git
+   cd delo
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   npm install
+   ```
+
+3. **Configure environment variables**:
+   ```bash
+   cp .env.example .env.local
+   # Fill in your Supabase, OpenAI, and Telegram credentials
+   ```
+
+4. **Run local web application**:
+   ```bash
+   npm run dev
+   ```
+
+5. **Run Telegram bot locally (long-polling)**:
+   ```bash
+   npm run bot:dev
+   ```
+
+6. **Run tests**:
+   ```bash
+   npm run test
+   ```
+
+---
+
+## 📄 License
+
+MIT © [Nikita Dmitrenco](https://github.com/NikitaDmitrenco)
