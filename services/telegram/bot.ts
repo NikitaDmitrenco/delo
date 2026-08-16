@@ -52,16 +52,22 @@ export function setupBot(botInstance: Bot = bot) {
       });
 
       const registerUrl = `${appUrl}/register?token=${linkingToken}`;
+      const isHttps = registerUrl.startsWith("https://");
 
-      const keyboard = new InlineKeyboard()
-        .url("Создать аккаунт", registerUrl)
-        .row()
-        .text("Я создал аккаунт", "check_link_status");
+      const keyboard = new InlineKeyboard();
+      if (isHttps) {
+        keyboard.url("Создать аккаунт", registerUrl).row();
+      }
+      keyboard.text("Я создал аккаунт", "check_link_status");
 
-      await ctx.reply(
-        `Привет! Чтобы пользоваться Delo, сначала создай или привяжи аккаунт на сайте.`,
-        { reply_markup: keyboard }
-      );
+      const text = isHttps
+        ? `Привет! Чтобы пользоваться Delo, сначала создай или привяжи аккаунт на сайте.`
+        : `Привет! Чтобы пользоваться Delo, сначала создай или привяжи аккаунт на сайте:\n\n👉 [Создать аккаунт](${registerUrl})\n\nПосле регистрации нажми кнопку ниже:`;
+
+      await ctx.reply(text, {
+        reply_markup: keyboard,
+        parse_mode: "Markdown",
+      });
     } catch (error) {
       console.error("Bot /start error:", error);
       await ctx.reply("Произошла ошибка при запуске бота. Попробуй позже.");

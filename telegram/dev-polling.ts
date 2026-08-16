@@ -1,7 +1,9 @@
 import dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
+dotenv.config({ path: ".env" });
 
-import { bot } from "../services/telegram/bot";
+import { Bot, InlineKeyboard } from "grammy";
+import { setupBot } from "../services/telegram/bot";
 
 async function runDevBot() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -14,11 +16,13 @@ async function runDevBot() {
 
   console.log("🚀 Запуск Telegram-бота Delo в режиме long polling...");
 
-  // Drop pending updates to avoid backlog on local restart
-  await bot.init();
-  console.log(`🤖 Бот авторизован как @${bot.botInfo.username}`);
+  const devBot = new Bot(token);
+  setupBot(devBot);
 
-  await bot.start({
+  await devBot.init();
+  console.log(`🤖 Бот авторизован как @${devBot.botInfo.username}`);
+
+  await devBot.start({
     onStart: (info) => {
       console.log(`✨ Бот @${info.username} успешно слушает сообщения.`);
     },
