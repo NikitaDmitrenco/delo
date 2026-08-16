@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard } from "grammy";
+import { Bot, InlineKeyboard, Keyboard } from "grammy";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseTaskInput } from "@/services/ai/parser";
 import { transcribeAudio } from "@/services/audio/whisper";
@@ -11,6 +11,55 @@ const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 export const bot = new Bot(token);
 
 /**
+ * Normalizes phone numbers to digits only for reliable database matching.
+ */
+export function normalizePhone(rawPhone: string): string {
+  const digits = rawPhone.replace(/\D/g, "");
+  // If starts with 8 and length is 11 (Russian format), normalize to 7
+  if (digits.length === 11 && digits.startsWith("8")) {
+    return "7" + digits.slice(1);
+  }
+  return digits;
+}
+
+/**
+ * Helper to find user profile by telegram_user_id or phone number.
+ */
+export async function findProfile(telegramUserId: number, rawPhone?: string | null) {
+  const admin = createAdminClient();
+
+  // 1. Direct match by telegram_user_id
+  const { data: profile } = await admin
+    .from("profiles")
+    .select("*")
+    .eq("telegram_user_id", telegramUserId)
+    .maybeSingle();
+
+  if (profile) return profile;
+
+  // 2. Match by phone if provided
+  if (rawPhone) {
+    const cleanInput = normalizePhone(rawPhone);
+    if (cleanInput.length >= 7) {
+      const { data: allProfiles } = await admin.from("profiles").select("*");
+      const matched = allProfiles?.find((p) => p.phone && normalizePhone(p.phone) === cleanInput);
+
+      if (matched) {
+        // Link this telegram_user_id to the found profile in database
+        await admin
+          .from("profiles")
+          .update({ telegram_user_id: telegramUserId })
+          .eq("id", matched.id);
+
+        return { ...matched, telegram_user_id: telegramUserId };
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Register all bot handlers and middlewares.
  */
 export function setupBot(botInstance: Bot = bot) {
@@ -19,22 +68,21 @@ export function setupBot(botInstance: Bot = bot) {
     const from = ctx.from;
     if (!from) return;
 
-    const admin = createAdminClient();
     const telegramUserId = from.id;
     const telegramUsername = from.username || null;
+    const admin = createAdminClient();
 
     try {
-      // Check if user already exists with this telegram_user_id
-      const { data: profile } = await admin
-        .from("profiles")
-        .select("*")
-        .eq("telegram_user_id", telegramUserId)
-        .maybeSingle();
+      // Check if user is already linked
+      const profile = await findProfile(telegramUserId);
 
       if (profile) {
         await ctx.reply(
           `Привет, ${from.first_name || "друг"}! Я Delo.\n\n` +
-            `Просто напиши или скажи голосом, что нужно сделать — я сам определю задачу и дедлайн.`
+            `Просто напиши или скажи голосом, что нужно сделать — я сам определю задачу и дедлайн.`,
+          {
+            reply_markup: { remove_keyboard: true },
+          }
         );
         return;
       }
@@ -54,23 +102,86 @@ export function setupBot(botInstance: Bot = bot) {
       const registerUrl = `${appUrl}/register?token=${linkingToken}`;
       const isHttps = registerUrl.startsWith("https://");
 
-      const keyboard = new InlineKeyboard();
+      // Inline keyboard for web registration
+      const inlineKeyboard = new InlineKeyboard();
       if (isHttps) {
-        keyboard.url("Создать аккаунт", registerUrl).row();
+        inlineKeyboard.url("Создать аккаунт на сайте", registerUrl).row();
       }
-      keyboard.text("Я создал аккаунт", "check_link_status");
+      inlineKeyboard.text("Я создал аккаунт", "check_link_status");
+
+      // Reply keyboard with 1-click Contact Sharing
+      const contactKeyboard = new Keyboard()
+        .requestContact("📱 Поделиться номером для привязки")
+        .resized()
+        .oneTime();
 
       const text = isHttps
-        ? `Привет! Чтобы пользоваться Delo, сначала создай или привяжи аккаунт на сайте.`
-        : `Привет! Чтобы пользоваться Delo, сначала создай или привяжи аккаунт на сайте:\n\n👉 [Создать аккаунт](${registerUrl})\n\nПосле регистрации нажми кнопку ниже:`;
+        ? `Привет! Чтобы пользоваться Delo, привяжите аккаунт одним из двух способов:\n\n` +
+          `1. Нажмите кнопку внизу **«📱 Поделиться номером для привязки»** (если регистрировались на сайте с номером телефона).\n` +
+          `2. Либо перейдите по кнопке ниже и создайте аккаунт на сайте.`
+        : `Привет! Чтобы пользоваться Delo, привяжите аккаунт:\n\n` +
+          `1. Нажмите кнопку **«📱 Поделиться номером для привязки»** внизу экрана.\n` +
+          `2. Либо перейдите по ссылке: [Создать аккаунт на сайте](${registerUrl})\n\n` +
+          `После регистрации нажмите «Я создал аккаунт» ниже.`;
 
       await ctx.reply(text, {
-        reply_markup: keyboard,
+        reply_markup: contactKeyboard,
         parse_mode: "Markdown",
+      });
+
+      // Send inline button for verification
+      await ctx.reply("После создания аккаунта на сайте нажмите кнопку подтверждения:", {
+        reply_markup: inlineKeyboard,
       });
     } catch (error) {
       console.error("Bot /start error:", error);
       await ctx.reply("Произошла ошибка при запуске бота. Попробуй позже.");
+    }
+  });
+
+  // Contact sharing handler: automatic phone verification and matching with database
+  botInstance.on("message:contact", async (ctx) => {
+    const from = ctx.from;
+    const contact = ctx.message.contact;
+    if (!from || !contact) return;
+
+    const telegramUserId = from.id;
+    const phoneNumber = contact.phone_number;
+
+    try {
+      await ctx.replyWithChatAction("typing");
+
+      // Search and link profile by phone number
+      const profile = await findProfile(telegramUserId, phoneNumber);
+
+      if (profile) {
+        await ctx.reply(
+          `✅ **Аккаунт найден и успешно привязан!**\n\n` +
+            `👤 Пользователь: **@${profile.username || "пользователь"}**\n` +
+            `📱 Телефон: **${profile.phone || phoneNumber}**\n\n` +
+            `Теперь ты можешь отправлять мне задачи текстом или голосовым сообщением.`,
+          {
+            reply_markup: { remove_keyboard: true },
+            parse_mode: "Markdown",
+          }
+        );
+      } else {
+        const linkingToken = `delo_${crypto.randomBytes(16).toString("hex")}`;
+        const registerUrl = `${appUrl}/register?token=${linkingToken}`;
+
+        await ctx.reply(
+          `❌ Пользователь с номером **${phoneNumber}** пока не зарегистрирован на сайте.\n\n` +
+            `Создай аккаунт с этим номером телефона по ссылке:\n` +
+            `👉 [Зарегистрироваться в Delo](${registerUrl})`,
+          {
+            reply_markup: { remove_keyboard: true },
+            parse_mode: "Markdown",
+          }
+        );
+      }
+    } catch (error) {
+      console.error("Contact link error:", error);
+      await ctx.reply("Произошла ошибка при сверке номера с базой данных.");
     }
   });
 
@@ -79,26 +190,24 @@ export function setupBot(botInstance: Bot = bot) {
     const from = ctx.from;
     if (!from) return;
 
-    const admin = createAdminClient();
     const telegramUserId = from.id;
 
     try {
-      const { data: profile } = await admin
-        .from("profiles")
-        .select("*")
-        .eq("telegram_user_id", telegramUserId)
-        .maybeSingle();
+      const profile = await findProfile(telegramUserId);
 
       if (profile) {
         await ctx.answerCallbackQuery({ text: "Аккаунт успешно подключен!" });
         await ctx.reply(
           `✅ Отлично! Твой аккаунт подключён.\n\n` +
-            `Теперь можешь отправить мне задачу текстом или голосовым сообщением.`
+            `Теперь можешь отправить мне задачу текстом или голосовым сообщением.`,
+          { reply_markup: { remove_keyboard: true } }
         );
       } else {
         await ctx.answerCallbackQuery({ text: "Аккаунт пока не найден" });
         await ctx.reply(
-          `Я пока не вижу созданного аккаунта. Убедись, что зарегистрировался через кнопку выше, и нажми проверку ещё раз.`
+          `Я пока не вижу созданного аккаунта.\n` +
+            `• Нажми кнопку **«📱 Поделиться номером для привязки»** внизу экрана\n` +
+            `• Либо убедись, что зарегистрировался по ссылке из этого чата.`
         );
       }
     } catch (error) {
@@ -115,20 +224,18 @@ export function setupBot(botInstance: Bot = bot) {
     // Ignore commands like /start /help
     if (text.startsWith("/")) return;
 
-    const admin = createAdminClient();
     const telegramUserId = from.id;
+    const admin = createAdminClient();
 
     try {
-      // 1. Verify user is linked
-      const { data: profile } = await admin
-        .from("profiles")
-        .select("*")
-        .eq("telegram_user_id", telegramUserId)
-        .maybeSingle();
+      // 1. Verify user is linked in database
+      const profile = await findProfile(telegramUserId);
 
       if (!profile) {
         await ctx.reply(
-          `Сначала нужно привязать аккаунт Delo. Отправь /start для подключения.`
+          `Сначала нужно привязать аккаунт Delo.\n` +
+            `Нажми кнопку **«📱 Поделиться номером для привязки»** или отправь /start для подключения.`,
+          { parse_mode: "Markdown" }
         );
         return;
       }
@@ -182,20 +289,18 @@ export function setupBot(botInstance: Bot = bot) {
   // Voice messages handler
   botInstance.on("message:voice", async (ctx) => {
     const from = ctx.from;
-    const admin = createAdminClient();
     const telegramUserId = from.id;
+    const admin = createAdminClient();
 
     try {
-      // 1. Verify user is linked
-      const { data: profile } = await admin
-        .from("profiles")
-        .select("*")
-        .eq("telegram_user_id", telegramUserId)
-        .maybeSingle();
+      // 1. Verify user is linked in database
+      const profile = await findProfile(telegramUserId);
 
       if (!profile) {
         await ctx.reply(
-          `Сначала нужно привязать аккаунт Delo. Отправь /start для подключения.`
+          `Сначала нужно привязать аккаунт Delo.\n` +
+            `Нажми кнопку **«📱 Поделиться номером для привязки»** или отправь /start для подключения.`,
+          { parse_mode: "Markdown" }
         );
         return;
       }
@@ -203,7 +308,6 @@ export function setupBot(botInstance: Bot = bot) {
       await ctx.replyWithChatAction("record_voice");
 
       // 2. Download voice audio from Telegram
-      const voice = ctx.message.voice;
       const fileInfo = await ctx.getFile();
 
       if (!fileInfo.file_path) {
