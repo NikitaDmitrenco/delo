@@ -12,7 +12,7 @@ This document tracks progress across all milestones from initialization to deplo
 | **M1** | **Database & Supabase** | ✅ Completed | Schemas, Migrations (001_initial_schema.sql), RLS policies, client helpers |
 | **M2** | **Authentication** | ✅ Completed | Supabase Auth (username/phone), protected routes, SSR session, login/register |
 | **M3** | **Task CRUD** | ✅ Completed | Dashboard UI, task list, create/edit/delete/complete, filters, date formatting |
-| **M4** | **Landing Page** | ⏳ Planned | Full interactive landing page and auth experience |
+| **M4** | **Landing Page** | ✅ Completed | Interactive parser demo, voice pipeline showcase, comparison section, CTAs |
 | **M5** | **Telegram Bot** | ⏳ Planned | Bot core, `/start`, unlinked CTA, text tasks |
 | **M6** | **AI Task Parsing** | ⏳ Planned | `parseTaskInput` service, timezone date computation, tests |
 | **M7** | **Voice Transcription** | ⏳ Planned | Telegram voice download + Whisper STT pipeline |
