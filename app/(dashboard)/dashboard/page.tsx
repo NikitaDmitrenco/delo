@@ -1,7 +1,8 @@
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import { TaskDashboard } from "@/components/tasks/TaskDashboard";
-import { LogOut, MessageSquare } from "lucide-react";
+import { LogoutButton } from "@/components/layout/LogoutButton";
+import { MessageSquare } from "lucide-react";
 import { Task } from "@/types";
 
 export default async function DashboardPage() {
@@ -62,15 +63,7 @@ export default async function DashboardPage() {
               </a>
             )}
 
-            <form action="/api/auth/logout" method="POST">
-              <button
-                type="submit"
-                className="inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-200 px-3 py-1.5 rounded-lg border border-zinc-800 hover:bg-zinc-900 transition-colors"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span>Выйти</span>
-              </button>
-            </form>
+            <LogoutButton />
           </div>
         </div>
       </header>
