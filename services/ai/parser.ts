@@ -62,12 +62,12 @@ export async function parseTaskInput(params: {
 
       const systemPrompt = `
 You are the AI Intent & Task Engine for "Delo", an intelligent minimalist task manager.
-Current user date/time: ${currentFormatted}, Timezone: ${timezone}.
+Current user wall-clock time: ${currentFormatted} in timezone ${timezone}.
 
 CRITICAL INTENT RULES:
 1. DEFAULT TO "create_task":
-   - Any message stating an action to do (e.g., "Отправить отчет Мари Ванне до 15:23 до вторника", "Купить молоко", "Завтра в три часа созвониться с юристом", "До 25 августа сдать проект") is ALWAYS "create_task".
-   - The presence of deadlines (e.g., "до 15:23", "до вторника", "завтра", "в 18:00") in a task description does NOT mean set_deadline. It is a "create_task" WITH a deadline.
+   - Any message stating an action to do (e.g., "Отправить отчет Мари Ванне до 15:23 до вторника", "Купить молоко", "Через 2 часа проверить рабочую почту", "Завтра в три часа созвониться с юристом", "До 25 августа сдать проект") is ALWAYS "create_task".
+   - The presence of deadlines (e.g., "через 2 часа", "до 15:23", "до вторника", "завтра") in a task description does NOT mean set_deadline. It is a "create_task" WITH a deadline.
 
 2. ONLY use other intents if the user explicitly gives a management command on an existing task:
    - "set_deadline": ONLY if user explicitly commands to postpone/move/set deadline (e.g., "Перенеси задачу отчета на послезавтра", "Сдвинь дедлайн статьи на завтра 18:00", "Поставь дедлайн задаче отчет на пятницу").
@@ -77,13 +77,18 @@ CRITICAL INTENT RULES:
    - "delete_task": ONLY if user explicitly commands to delete (e.g., "Удали задачу проверить почту", "Вычеркни молоко").
    - "edit_title": ONLY if user explicitly commands to rename (e.g., "Измени задачу 'купить хлеб' на 'купить багет'").
 
-3. FIELDS TO RETURN:
+3. DEADLINE FORMAT:
+   - Calculate deadline in user's LOCAL wall-clock time string format: "YYYY-MM-DD HH:mm:ss" (e.g. "2026-08-17 17:49:00").
+   - For relative offsets like "через 2 часа": add 2 hours to ${currentFormatted}.
+   - For "послезавтра": add 2 days.
+   - For "завтра": add 1 day.
+   - If no deadline or intent is "remove_deadline", return null.
+
+4. FIELDS TO RETURN:
    - "intent": "create_task" | "complete_task" | "uncomplete_task" | "delete_task" | "edit_title" | "set_deadline" | "remove_deadline"
    - "targetQuery": The keyword identifying the existing task to find (e.g. "отчет", "купить хлеб", "проверить почту"). For "create_task", return null.
    - "title": Clean capitalized task title without date/time and filler words for "create_task" or new title for "edit_title". Otherwise null.
-   - "deadline": ISO-8601 UTC timestamp calculated relative to ${currentFormatted} in ${timezone}, or null.
-     - "послезавтра" = anchorDate + 2 days.
-     - "завтра" = anchorDate + 1 day.
+   - "deadline": Local wall-clock timestamp string "YYYY-MM-DD HH:mm:ss" or null.
 
 Return strictly valid JSON:
 {
@@ -109,11 +114,29 @@ Return strictly valid JSON:
         const parsedJson = JSON.parse(content);
         const validated = parsedTaskSchema.parse(parsedJson);
 
+        let finalDeadlineIso: string | null = null;
+        if (validated.deadline && validated.intent !== "remove_deadline") {
+          const raw = validated.deadline.trim();
+          // Normalize to YYYY-MM-DD HH:mm:ss
+          if (raw.includes("T") || raw.endsWith("Z")) {
+            // If LLM returned ISO, parse local parts
+            const cleanStr = raw.replace("T", " ").replace("Z", "").slice(0, 19);
+            const utcDate = fromZonedTime(cleanStr, timezone);
+            finalDeadlineIso = utcDate.toISOString();
+          } else if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?$/.test(raw)) {
+            const fullStr = raw.length === 16 ? `${raw}:00` : raw;
+            const utcDate = fromZonedTime(fullStr, timezone);
+            finalDeadlineIso = utcDate.toISOString();
+          } else {
+            finalDeadlineIso = new Date(raw).toISOString();
+          }
+        }
+
         return {
           intent: validated.intent,
           targetQuery: cleanTargetQuery(validated.targetQuery),
           title: validated.title?.trim() || (validated.intent === "create_task" ? trimmed : null),
-          deadline: validated.deadline || null,
+          deadline: finalDeadlineIso,
         };
       }
     } catch (error) {
@@ -169,6 +192,7 @@ export function fallbackParser(
   let targetDate: Date | null = null;
   let targetHour: number | null = null;
   let targetMinute: number | null = null;
+  let isDirectRelativeOffset = false;
   const matchedSpans: string[] = [];
 
   // Offset ("через 2 часа", "через 30 минут", "через 3 дня")
@@ -180,11 +204,13 @@ export function fallbackParser(
     const wordMap: Record<string, number> = { один: 1, полтора: 1.5, два: 2, три: 3, четыре: 4, пять: 5 };
     const hours = wordMap[offsetHourMatch[2]] || parseFloat(offsetHourMatch[2]) || 1;
     targetDate = addMinutes(anchorDate, Math.round(hours * 60));
+    isDirectRelativeOffset = true;
     matchedSpans.push(offsetHourMatch[1]);
   } else if (offsetMinMatch) {
     const wordMap: Record<string, number> = { полчаса: 30, двадцать: 20, тридцать: 30, сорок: 40, пятьдесят: 50 };
     const mins = wordMap[offsetMinMatch[2]] || parseInt(offsetMinMatch[2], 10) || 15;
     targetDate = addMinutes(anchorDate, mins);
+    isDirectRelativeOffset = true;
     matchedSpans.push(offsetMinMatch[1]);
   } else if (offsetDayMatch) {
     const wordMap: Record<string, number> = { один: 1, два: 2, три: 3, четыре: 4, неделю: 7, недели: 14 };
@@ -310,16 +336,20 @@ export function fallbackParser(
 
   let deadline: string | null = null;
   if (targetDate && intent !== "remove_deadline") {
-    const finalHour = targetHour !== null ? targetHour : 18;
-    const finalMinute = targetMinute !== null ? targetMinute : 0;
+    if (isDirectRelativeOffset) {
+      deadline = targetDate.toISOString();
+    } else {
+      const finalHour = targetHour !== null ? targetHour : 18;
+      const finalMinute = targetMinute !== null ? targetMinute : 0;
 
-    const dateStr = formatInTimeZone(targetDate, timezone, "yyyy-MM-dd");
-    const hourStr = String(finalHour).padStart(2, "0");
-    const minStr = String(finalMinute).padStart(2, "0");
+      const dateStr = formatInTimeZone(targetDate, timezone, "yyyy-MM-dd");
+      const hourStr = String(finalHour).padStart(2, "0");
+      const minStr = String(finalMinute).padStart(2, "0");
 
-    const localDateTimeStr = `${dateStr} ${hourStr}:${minStr}:00`;
-    const utcDate = fromZonedTime(localDateTimeStr, timezone);
-    deadline = utcDate.toISOString();
+      const localDateTimeStr = `${dateStr} ${hourStr}:${minStr}:00`;
+      const utcDate = fromZonedTime(localDateTimeStr, timezone);
+      deadline = utcDate.toISOString();
+    }
   }
 
   // 3. Extract Target Query and Clean Title
