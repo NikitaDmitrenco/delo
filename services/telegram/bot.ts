@@ -4,7 +4,9 @@ import { parseTaskInput } from "@/services/ai/parser";
 import { transcribeAudio } from "@/services/audio/whisper";
 import { formatDeadline } from "@/lib/utils/dates";
 import { findBestMatchingTask } from "@/lib/utils/matching";
+import { calculateRemindAt } from "@/services/reminders/calculator";
 import { ParsedTaskResult, Task, TaskInputType } from "@/types";
+import { addMinutes } from "date-fns";
 import crypto from "crypto";
 
 const token = process.env.TELEGRAM_BOT_TOKEN || "placeholder_token";
@@ -85,9 +87,29 @@ export async function executeTaskAction(params: {
 }) {
   const { ctx, admin, profile, parsed, originalInput, inputType, userTimezone, transcript } = params;
 
+  // 0. Intent: SET REMINDER BUFFER
+  if (parsed.intent === "set_reminder_buffer") {
+    const bufferMins = parsed.reminderBufferMinutes || 20;
+    await admin
+      .from("profiles")
+      .update({ reminder_buffer_minutes: bufferMins })
+      .eq("id", profile.id);
+
+    await ctx.reply(
+      `⏱ <b>Буфер напоминаний обновлён!</b>\n\n` +
+        `Теперь я буду присылать напоминания за <b>${bufferMins} минут</b> до того, как нужно садиться за работу над задачами.`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
   // 1. Intent: CREATE TASK
   if (parsed.intent === "create_task") {
     const title = parsed.title || originalInput;
+    const durationMins = parsed.estimatedDurationMinutes || 30;
+    const bufferMins = profile.reminder_buffer_minutes || 20;
+    const remindAt = calculateRemindAt(parsed.deadline, durationMins, bufferMins);
+
     const { error: dbError } = await admin.from("tasks").insert({
       user_id: profile.id,
       title: title,
@@ -95,6 +117,9 @@ export async function executeTaskAction(params: {
       completed: false,
       source: "telegram",
       input_type: inputType,
+      estimated_duration_minutes: durationMins,
+      remind_at: remindAt,
+      reminder_sent: false,
       original_input: originalInput,
       transcript: transcript || null,
     });
@@ -134,6 +159,9 @@ export async function executeTaskAction(params: {
     if (parsed.intent === "set_deadline" || tasks.length === 0) {
       const fallbackTitle = parsed.title || originalInput.replace(/(?:^|[^\p{L}\d])(?:перенеси|сдвинь|поставь\s+дедлайн)\s+/giu, "").trim();
       const capTitle = fallbackTitle.charAt(0).toUpperCase() + fallbackTitle.slice(1);
+      const durationMins = parsed.estimatedDurationMinutes || 30;
+      const bufferMins = profile.reminder_buffer_minutes || 20;
+      const remindAt = calculateRemindAt(parsed.deadline, durationMins, bufferMins);
 
       const { error: dbError } = await admin.from("tasks").insert({
         user_id: profile.id,
@@ -142,6 +170,9 @@ export async function executeTaskAction(params: {
         completed: false,
         source: "telegram",
         input_type: inputType,
+        estimated_duration_minutes: durationMins,
+        remind_at: remindAt,
+        reminder_sent: false,
         original_input: originalInput,
         transcript: transcript || null,
       });
@@ -203,7 +234,15 @@ export async function executeTaskAction(params: {
 
   // 5. Intent: SET / UPDATE DEADLINE (Установить / перенести дедлайн)
   if (parsed.intent === "set_deadline") {
-    await admin.from("tasks").update({ deadline: parsed.deadline }).eq("id", matchedTask.id);
+    const durationMins = matchedTask.estimated_duration_minutes || 30;
+    const bufferMins = profile.reminder_buffer_minutes || 20;
+    const remindAt = calculateRemindAt(parsed.deadline, durationMins, bufferMins);
+
+    await admin
+      .from("tasks")
+      .update({ deadline: parsed.deadline, remind_at: remindAt, reminder_sent: false })
+      .eq("id", matchedTask.id);
+
     const formattedDate = formatDeadline(parsed.deadline, userTimezone);
     await ctx.reply(
       `⏱ <b>Дедлайн обновлён</b>\n\n` +
@@ -216,7 +255,7 @@ export async function executeTaskAction(params: {
 
   // 6. Intent: REMOVE DEADLINE (Снять дедлайн)
   if (parsed.intent === "remove_deadline") {
-    await admin.from("tasks").update({ deadline: null }).eq("id", matchedTask.id);
+    await admin.from("tasks").update({ deadline: null, remind_at: null }).eq("id", matchedTask.id);
     await ctx.reply(
       `⏱ <b>Дедлайн снят</b>\n\n` +
         `📌 <b>${escapeHtml(matchedTask.title)}</b> (Без дедлайна)`,
@@ -262,6 +301,7 @@ export function setupBot(botInstance: Bot = bot) {
             `💡 <b>Примеры команд:</b>\n` +
             `• <i>«Завтра в 15:00 созвониться с юристом»</i>\n` +
             `• <i>«Перенеси задачу отчета на послезавтра»</i>\n` +
+            `• <i>«Поставь таймер напоминания по умолчанию за 30 минут»</i>\n` +
             `• <i>«Поставь галочку на задаче купить молоко»</i>\n` +
             `• <i>«Удали задачу про договор»</i>`,
           {
@@ -401,6 +441,46 @@ export function setupBot(botInstance: Bot = bot) {
     } catch (error) {
       console.error("Bot callback error:", error);
       await ctx.answerCallbackQuery({ text: "Ошибка при проверке" });
+    }
+  });
+
+  // Reminder interactive callbacks: Done and Snooze (+30 min)
+  botInstance.callbackQuery(/^rem_done:(.+)$/, async (ctx) => {
+    const taskId = ctx.match[1];
+    const admin = createAdminClient();
+
+    try {
+      await admin.from("tasks").update({ completed: true }).eq("id", taskId);
+      await ctx.answerCallbackQuery({ text: "Задача выполнена!" });
+      await ctx.reply("✅ <b>Отлично! Задача отмечена как выполненная.</b>", { parse_mode: "HTML" });
+    } catch (err) {
+      console.error("Reminder done callback error:", err);
+      await ctx.answerCallbackQuery({ text: "Ошибка" });
+    }
+  });
+
+  botInstance.callbackQuery(/^rem_snooze:(.+)$/, async (ctx) => {
+    const taskId = ctx.match[1];
+    const admin = createAdminClient();
+
+    try {
+      const { data: task } = await admin.from("tasks").select("*").eq("id", taskId).single();
+      if (task) {
+        const currentDeadline = task.deadline ? new Date(task.deadline) : new Date();
+        const newDeadline = addMinutes(currentDeadline, 30).toISOString();
+        const newRemindAt = addMinutes(new Date(), 25).toISOString();
+
+        await admin
+          .from("tasks")
+          .update({ deadline: newDeadline, remind_at: newRemindAt, reminder_sent: false })
+          .eq("id", taskId);
+
+        await ctx.answerCallbackQuery({ text: "Дедлайн перенесён на 30 мин" });
+        await ctx.reply("⏱ <b>Дедлайн задачи сдвинут на +30 минут.</b>", { parse_mode: "HTML" });
+      }
+    } catch (err) {
+      console.error("Reminder snooze callback error:", err);
+      await ctx.answerCallbackQuery({ text: "Ошибка" });
     }
   });
 

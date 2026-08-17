@@ -3,6 +3,7 @@ import { z } from "zod";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { addDays, addMinutes } from "date-fns";
 import { ParsedTaskResult, TaskIntent } from "@/types";
+import { estimateDefaultDuration } from "@/services/reminders/calculator";
 
 const parsedTaskSchema = z.object({
   intent: z.enum([
@@ -13,10 +14,13 @@ const parsedTaskSchema = z.object({
     "edit_title",
     "set_deadline",
     "remove_deadline",
+    "set_reminder_buffer",
   ]),
   targetQuery: z.string().nullable().optional(),
   title: z.string().nullable().optional(),
   deadline: z.string().nullable().optional(),
+  estimatedDurationMinutes: z.number().nullable().optional(),
+  reminderBufferMinutes: z.number().nullable().optional(),
 });
 
 /**
@@ -33,7 +37,7 @@ export function cleanTargetQuery(raw: string | null | undefined): string | null 
 }
 
 /**
- * Parses user natural language input (Russian or English) and extracts structured intent, task title, and deadline.
+ * Parses user natural language input (Russian or English) and extracts structured intent, task title, deadline, duration, and buffer settings.
  */
 export async function parseTaskInput(params: {
   input: string;
@@ -66,18 +70,26 @@ Current user wall-clock time: ${currentFormatted} in timezone ${timezone}.
 
 CRITICAL INTENT RULES:
 1. DEFAULT TO "create_task":
-   - Any message stating an action to do (e.g., "Отправить отчет Мари Ванне до 15:23 до вторника", "Купить молоко", "Через 2 часа проверить рабочую почту", "Завтра в три часа созвониться с юристом", "До 25 августа сдать проект", "До 25 августа подготовить документы") is ALWAYS "create_task".
-   - The presence of deadlines (e.g., "до 25 августа", "через 2 часа", "до 15:23", "до вторника", "завтра") in a task description does NOT mean set_deadline. It is a "create_task" WITH a deadline.
+   - Any message stating an action to do (e.g., "Отправить отчет Мари Ванне до 15:23 до вторника", "Купить молоко", "Через 2 часа проверить рабочую почту", "Завтра в три часа созвониться с юристом", "До 25 августа сдать проект") is ALWAYS "create_task".
+   - The presence of deadlines in a task description does NOT mean set_deadline. It is a "create_task" WITH a deadline.
 
-2. ONLY use other intents if the user explicitly gives a management command on an existing task:
-   - "set_deadline": ONLY if user explicitly commands to postpone/move/set deadline (e.g., "Перенеси задачу отчета на послезавтра", "Сдвинь дедлайн статьи на завтра 18:00", "Поставь дедлайн задаче отчет на пятницу").
-   - "remove_deadline": ONLY if user explicitly commands to remove deadline (e.g., "Убери дедлайн у задачи отчет", "Сделай задачу созвон без дедлайна").
-   - "complete_task": ONLY if user explicitly commands to complete (e.g., "Поставь галочку на задаче купить хлеб", "Пометь отчет выполненным", "Я сделал созвон").
-   - "uncomplete_task": ONLY if user explicitly commands to uncheck/reactivate (e.g., "Верни задачу купить хлеб в работу", "Сними галочку с задачи").
-   - "delete_task": ONLY if user explicitly commands to delete (e.g., "Удали задачу проверить почту", "Вычеркни молоко").
-   - "edit_title": ONLY if user explicitly commands to rename (e.g., "Измени задачу 'купить хлеб' на 'купить багет'").
+2. OTHER INTENTS (ONLY WHEN EXPLICITLY COMMANDED):
+   - "set_reminder_buffer": User wants to configure reminder transition buffer (e.g., "Поставь таймер напоминания по умолчанию за 30 минут", "Сделай буфер напоминаний 15 минут", "Напоминай за 45 минут").
+   - "set_deadline": User explicitly commands to postpone/move/set deadline (e.g., "Перенеси задачу отчета на послезавтра", "Сдвинь дедлайн статьи на завтра 18:00").
+   - "remove_deadline": User explicitly commands to remove deadline (e.g., "Убери дедлайн у задачи отчет").
+   - "complete_task": User explicitly commands to complete (e.g., "Поставь галочку на задаче купить хлеб", "Пометь отчет выполненным").
+   - "uncomplete_task": User explicitly commands to uncheck/reactivate (e.g., "Верни задачу купить хлеб в работу", "Сними галочку").
+   - "delete_task": User explicitly commands to delete (e.g., "Удали задачу проверить почту", "Вычеркни молоко").
+   - "edit_title": User explicitly commands to rename (e.g., "Измени задачу 'купить хлеб' на 'купить багет'").
 
-3. DEADLINE & TIME RESOLUTION RULES (RUSSIAN SEMANTICS):
+3. TASK DURATION ESTIMATION:
+   - For "create_task", estimate "estimatedDurationMinutes" (integer in minutes):
+     * Quick actions (calls, messages, payments, quick check): 15-30.
+     * Medium tasks (write article, buy groceries, meeting, workout): 45-90.
+     * Large tasks (quarterly report, dissertation, taxes, project): 120-240+.
+     * If user stated duration (e.g. "мне нужно 2 часа..."): extract exact minutes (120).
+
+4. DEADLINE & TIME RESOLUTION RULES (RUSSIAN SEMANTICS):
    - Calculate deadline in user's LOCAL wall-clock time format: "YYYY-MM-DD HH:mm:ss".
    - CRITICAL WEEKDAYS: Always choose the CLOSEST UPCOMING occurrence of the weekday from ${currentFormatted}.
      * If today is Monday (Aug 17), "во вторник" / "до вторника" is ALWAYS TOMORROW (Tuesday, Aug 18). Never skip to next week unless the user explicitly says "в следующий вторник".
@@ -92,18 +104,22 @@ CRITICAL INTENT RULES:
    - If no deadline or intent is "remove_deadline", return null.
    - NEVER copy current time's random minutes/hours unless calculating relative offset "через X".
 
-4. FIELDS TO RETURN:
-   - "intent": "create_task" | "complete_task" | "uncomplete_task" | "delete_task" | "edit_title" | "set_deadline" | "remove_deadline"
-   - "targetQuery": The keyword identifying the existing task to find (e.g. "отчет", "купить хлеб", "проверить почту"). For "create_task", return null.
+5. FIELDS TO RETURN:
+   - "intent": "create_task" | "complete_task" | "uncomplete_task" | "delete_task" | "edit_title" | "set_deadline" | "remove_deadline" | "set_reminder_buffer"
+   - "targetQuery": The keyword identifying the existing task to find (e.g. "отчет", "купить хлеб"). For "create_task", return null.
    - "title": Clean capitalized task title without date/time and filler words for "create_task" or new title for "edit_title". Otherwise null.
    - "deadline": Local wall-clock timestamp string "YYYY-MM-DD HH:mm:ss" or null.
+   - "estimatedDurationMinutes": Integer minutes estimated for task execution (e.g. 15, 60, 120) or null.
+   - "reminderBufferMinutes": Integer minutes requested for "set_reminder_buffer" (e.g. 30) or null.
 
 Return strictly valid JSON:
 {
-  "intent": "create_task" | "complete_task" | "uncomplete_task" | "delete_task" | "edit_title" | "set_deadline" | "remove_deadline",
+  "intent": "create_task" | "complete_task" | "uncomplete_task" | "delete_task" | "edit_title" | "set_deadline" | "remove_deadline" | "set_reminder_buffer",
   "targetQuery": string | null,
   "title": string | null,
-  "deadline": string | null
+  "deadline": string | null,
+  "estimatedDurationMinutes": number | null,
+  "reminderBufferMinutes": number | null
 }
 `;
 
@@ -138,11 +154,17 @@ Return strictly valid JSON:
           }
         }
 
+        const duration =
+          validated.estimatedDurationMinutes ||
+          (validated.title ? estimateDefaultDuration(validated.title) : 30);
+
         return {
           intent: validated.intent,
           targetQuery: cleanTargetQuery(validated.targetQuery),
           title: validated.title?.trim() || (validated.intent === "create_task" ? trimmed : null),
           deadline: finalDeadlineIso,
+          estimatedDurationMinutes: duration,
+          reminderBufferMinutes: validated.reminderBufferMinutes || null,
         };
       }
     } catch (error) {
@@ -166,8 +188,20 @@ export function fallbackParser(
 
   // 1. Detect Intent
   let intent: TaskIntent = "create_task";
+  let reminderBufferMinutes: number | null = null;
 
-  if (
+  // Buffer settings intent: "поставь таймер напоминания по умолчанию за 30 минут", "сделай напоминания за 15 минут"
+  const isBufferCmd = /(?:таймер|буфер|напоминан)/iu.test(lower) && /(?:поставь|сделай|измени|установи|напоминай|по\s+умолчанию)/iu.test(lower);
+  const numMinutesMatch = lower.match(/(?:за|на)\s+(\d+|полчаса|пятнадцать|двадцать|тридцать|сорок|пятьдесят|час)\s*(?:минут|мин|ч|часа)?/iu) ||
+                          lower.match(/(\d+|полчаса|пятнадцать|двадцать|тридцать|сорок|пятьдесят|час)\s*(?:минут|мин)\s*(?:до|буфер|таймер)/iu);
+
+  if (isBufferCmd && numMinutesMatch) {
+    intent = "set_reminder_buffer";
+    const wordMap: Record<string, number> = {
+      пятнадцать: 15, двадцать: 20, полчаса: 30, тридцать: 30, сорок: 40, пятьдесят: 50, час: 60
+    };
+    reminderBufferMinutes = wordMap[numMinutesMatch[1].toLowerCase()] || parseInt(numMinutesMatch[1], 10) || 20;
+  } else if (
     /(?:^|[^\p{L}\d])(?:пометь|отметь|закрой|поставь\s+галочку|сделал|выполнил)(?:\s+(?:задачу|как|была|уже))?/iu.test(lower) &&
     /выполненн|сделан|готов|галочк/iu.test(lower)
   ) {
@@ -352,7 +386,6 @@ export function fallbackParser(
     if (isDirectRelativeOffset) {
       deadline = targetDate.toISOString();
     } else {
-      // If "до [Дата]" without explicit hour was used: deadline is PRECEDING day at 23:59:00
       let finalDate = targetDate;
       let finalHour = 18;
       let finalMinute = 0;
@@ -387,7 +420,7 @@ export function fallbackParser(
 
   // Remove command prefixes for intent extraction
   cleanText = cleanText
-    .replace(/(?:^|[^\p{L}\d])(пометь(те)?|отметь(те)?|закрой(те)?|поставь(те)?\s+галочку|сними(те)?\s+галочку|верни(те)?|удали(ть)?|сотри(те)?|вычеркни(те)?|убери(те)?|перенеси(те)?|сдвинь(те)?|измени(те)?|поменяй(те)?|переименуй(те)?|добавь(те)?)(?:\s+(?:задачу|как|обратно|в\s+работу|название|текст|дедлайн|срок))?/giu, " ")
+    .replace(/(?:^|[^\p{L}\d])(пометь(те)?|отметь(те)?|закрой(те)?|поставь(те)?\s+галочку|сними(те)?\s+галочку|верни(те)?|удали(ть)?|сотри(те)?|вычеркни(те)?|убери(те)?|перенеси(те)?|сдвинь(те)?|измени(те)?|поменяй(те)?|переименуй(те)?|добавь(те)?)(?:\s+(?:задачу|как|обратно|в\s+работу|название|текст|дедлайн|срок|буфер|таймер))?/giu, " ")
     .replace(/(?:^|[^\p{L}\d])(выполненн[а-я]*|сделан[а-я]*|готов[а-я]*|дедлайн[а-я]*|задач[а-я]*)(?:[^\p{L}\d]|$)/giu, " ")
     .replace(/(?:^|[^\p{L}\d])(напомни(ть)?|надо бы|надо|нужно|пожалуйста|срочно|так|блин|слушай|плиз|быстро|не забудь(те)?)(?:[^\p{L}\d]|$)/giu, " ")
     .replace(/\s+/g, " ")
@@ -409,11 +442,14 @@ export function fallbackParser(
   }
 
   const capitalized = cleanText.charAt(0).toUpperCase() + cleanText.slice(1);
+  const estimatedDurationMinutes = estimateDefaultDuration(cleanText);
 
   return {
     intent,
     targetQuery: intent === "create_task" ? null : cleanTargetQuery(cleanText),
     title: intent === "create_task" || intent === "edit_title" ? capitalized : null,
     deadline,
+    estimatedDurationMinutes: intent === "create_task" ? estimatedDurationMinutes : null,
+    reminderBufferMinutes,
   };
 }
