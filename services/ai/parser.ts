@@ -79,9 +79,11 @@ CRITICAL INTENT RULES:
 
 3. DEADLINE & TIME RESOLUTION RULES (RUSSIAN SEMANTICS):
    - Calculate deadline in user's LOCAL wall-clock time format: "YYYY-MM-DD HH:mm:ss".
+   - CRITICAL WEEKDAYS: Always choose the CLOSEST UPCOMING occurrence of the weekday from ${currentFormatted}.
+     * If today is Monday (Aug 17), "во вторник" / "до вторника" is ALWAYS TOMORROW (Tuesday, Aug 18). Never skip to next week unless the user explicitly says "в следующий вторник".
    - "до [Дата/Число]" (e.g., "до 25 августа", "до 1 сентября") WITHOUT exact hour means BEFORE that date arrives, so deadline is the PRECEDING day at 23:59:00 (e.g. "до 25 августа" -> "2026-08-24 23:59:00").
    - "до [День недели]" (e.g., "до вторника") WITHOUT exact hour means BEFORE that weekday arrives, so deadline is the preceding day at 23:59:00.
-   - If exact time is stated with "до" (e.g., "до 15:23 до вторника", "до 25 августа 18:00"), use that exact hour on that day (e.g., Tuesday 15:23:00).
+   - If exact time is stated with "до" (e.g., "до 15:23 до вторника"), use that exact hour on the closest occurrence of that day (e.g., Tuesday Aug 18 at 15:23:00).
    - "в [День недели]" (e.g., "во вторник", "в пятницу") without exact hour -> that day at 18:00:00.
    - "[Дата/Число]" without "до" (e.g., "25 августа подготовить документы") -> "2026-08-25 18:00:00".
    - "послезавтра" without hour -> anchorDate + 2 days at 18:00:00.
