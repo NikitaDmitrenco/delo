@@ -53,7 +53,7 @@ export default async function DashboardPage() {
               </span>
             ) : (
               <a
-                href="https://t.me"
+                href="https://t.me/delo_task_bot"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="hidden sm:inline-flex items-center gap-1.5 text-xs text-sky-400 hover:text-sky-300 bg-sky-950/30 border border-sky-800/40 px-2.5 py-1 rounded-lg transition-colors"
