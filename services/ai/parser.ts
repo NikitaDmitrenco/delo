@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { z } from "zod";
-import { formatInTimeZone } from "date-fns-tz";
+import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import {
   addDays,
   addMinutes,
@@ -225,21 +225,28 @@ export function fallbackParser(
     }
   }
 
-  // If time was given without explicit date, default to today (or tomorrow if passed)
+  // If time was given without explicit date, default to today (or tomorrow if passed in user timezone)
   if (targetHour !== null && !targetDate) {
     targetDate = new Date(anchorDate);
-    if (targetHour < anchorDate.getHours()) {
+    const currentHourInUserTz = parseInt(formatInTimeZone(anchorDate, timezone, "HH"), 10);
+    if (targetHour < currentHourInUserTz) {
       targetDate = addDays(anchorDate, 1);
     }
   }
 
-  // Construct ISO deadline
+  // Construct ISO deadline strictly in user's timezone
   let deadline: string | null = null;
   if (targetDate) {
     const finalHour = targetHour !== null ? targetHour : 18;
     const finalMinute = targetMinute !== null ? targetMinute : 0;
-    const dt = setMilliseconds(setSeconds(setMinutes(setHours(targetDate, finalHour), finalMinute), 0), 0);
-    deadline = dt.toISOString();
+
+    const dateStr = formatInTimeZone(targetDate, timezone, "yyyy-MM-dd");
+    const hourStr = String(finalHour).padStart(2, "0");
+    const minStr = String(finalMinute).padStart(2, "0");
+
+    const localDateTimeStr = `${dateStr} ${hourStr}:${minStr}:00`;
+    const utcDate = fromZonedTime(localDateTimeStr, timezone);
+    deadline = utcDate.toISOString();
   }
 
   // 5. Clean task title

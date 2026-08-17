@@ -1,8 +1,9 @@
-import { format, isToday, isTomorrow, isPast, parseISO, isValid } from "date-fns";
+import { parseISO, isValid, addDays } from "date-fns";
+import { formatInTimeZone } from "date-fns-tz";
 import { ru } from "date-fns/locale";
 
 /**
- * Formats a deadline timestamp into a user-friendly Russian string.
+ * Formats a deadline timestamp into a user-friendly Russian string respecting user timezone.
  * Example outputs:
  * - "Сегодня · 15:00"
  * - "Завтра · 10:30"
@@ -10,32 +11,51 @@ import { ru } from "date-fns/locale";
  * - "21 августа 2026 · 17:00"
  * - "Без дедлайна"
  */
-export function formatDeadline(dateString: string | null | undefined): string {
+export function formatDeadline(
+  dateString: string | null | undefined,
+  timezone?: string
+): string {
   if (!dateString) return "Без дедлайна";
 
   const date = typeof dateString === "string" ? parseISO(dateString) : new Date(dateString);
   if (!isValid(date)) return "Без дедлайна";
 
-  const timePart = format(date, "HH:mm");
+  // Determine active timezone
+  let tz = timezone;
+  if (!tz) {
+    try {
+      tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    } catch {
+      tz = "Europe/Chisinau";
+    }
+  }
+  if (!tz) tz = "Europe/Chisinau";
 
-  if (isToday(date)) {
+  const timePart = formatInTimeZone(date, tz, "HH:mm");
+  const formattedDayMonth = formatInTimeZone(date, tz, "d MMMM", { locale: ru });
+  const formattedFull = formatInTimeZone(date, tz, "d MMMM yyyy", { locale: ru });
+
+  const now = new Date();
+  const todayStr = formatInTimeZone(now, tz, "yyyy-MM-dd");
+  const targetDayStr = formatInTimeZone(date, tz, "yyyy-MM-dd");
+  const tomorrowStr = formatInTimeZone(addDays(now, 1), tz, "yyyy-MM-dd");
+
+  if (targetDayStr === todayStr) {
     return `Сегодня · ${timePart}`;
   }
 
-  if (isTomorrow(date)) {
+  if (targetDayStr === tomorrowStr) {
     return `Завтра · ${timePart}`;
   }
 
-  const currentYear = new Date().getFullYear();
-  const dateYear = date.getFullYear();
+  const currentYear = parseInt(formatInTimeZone(now, tz, "yyyy"), 10);
+  const dateYear = parseInt(formatInTimeZone(date, tz, "yyyy"), 10);
 
   if (currentYear === dateYear) {
-    const dayMonth = format(date, "d MMMM", { locale: ru });
-    return `${dayMonth} · ${timePart}`;
+    return `${formattedDayMonth} · ${timePart}`;
   }
 
-  const fullDate = format(date, "d MMMM yyyy", { locale: ru });
-  return `${fullDate} · ${timePart}`;
+  return `${formattedFull} · ${timePart}`;
 }
 
 /**
@@ -45,5 +65,5 @@ export function isOverdue(dateString: string | null | undefined, completed = fal
   if (!dateString || completed) return false;
   const date = typeof dateString === "string" ? parseISO(dateString) : new Date(dateString);
   if (!isValid(date)) return false;
-  return isPast(date);
+  return date.getTime() < Date.now();
 }

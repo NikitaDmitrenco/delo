@@ -292,7 +292,7 @@ export function setupBot(botInstance: Bot = bot) {
       }
 
       // 4. Send formatted confirmation
-      const formattedDate = formatDeadline(parsed.deadline);
+      const formattedDate = formatDeadline(parsed.deadline, userTimezone);
       await ctx.reply(
         `✅ <b>Задача добавлена</b>\n\n` +
           `📌 <b>${escapeHtml(parsed.title)}</b>\n` +
@@ -380,7 +380,7 @@ export function setupBot(botInstance: Bot = bot) {
       }
 
       // 6. Send confirmation
-      const formattedDate = formatDeadline(parsed.deadline);
+      const formattedDate = formatDeadline(parsed.deadline, userTimezone);
       await ctx.reply(
         `✅ <b>Задача добавлена из голосового сообщения</b>\n\n` +
           `🎤 <i>«${escapeHtml(transcript)}»</i>\n\n` +
