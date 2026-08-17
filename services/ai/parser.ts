@@ -20,6 +20,19 @@ const parsedTaskSchema = z.object({
 });
 
 /**
+ * Cleans the search query from leading prepositions and noise words.
+ */
+export function cleanTargetQuery(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let cleaned = raw
+    .replace(/^(?:на|у|про|о|об|в|по|для|с|со|задачу|задача|дело)\s+/giu, "")
+    .replace(/\s+(?:в\s+работу|выполненн[а-я]*|сделан[а-я]*|обратно|готов[а-я]*)$/giu, "")
+    .replace(/^[–—\-:\s,]+|[–—\-:\s,]+$/g, "")
+    .trim();
+  return cleaned.length >= 2 ? cleaned : null;
+}
+
+/**
  * Parses user natural language input (Russian or English) and extracts structured intent, task title, and deadline.
  */
 export async function parseTaskInput(params: {
@@ -49,29 +62,30 @@ export async function parseTaskInput(params: {
 
       const systemPrompt = `
 You are the AI Intent & Task Engine for "Delo", an intelligent minimalist task manager.
-Your role is to classify the user's intent and extract structured data:
+Current user date/time: ${currentFormatted}, Timezone: ${timezone}.
 
-1. "intent": One of:
-   - "create_task": User wants to add a new task (e.g., "Завтра в 15:00 созвон", "Добавь задачу купить хлеб").
-   - "complete_task": User wants to mark an existing task as completed (e.g., "Пометь задачу отчет Мари Ванне выполненной", "Поставь галочку на задаче купить хлеб", "Сделал статью").
-   - "uncomplete_task": User wants to uncheck / reactivate a task (e.g., "Верни отчет в работу", "Сними галочку с задачи").
-   - "delete_task": User wants to delete a task (e.g., "Удали задачу про юриста", "Вычеркни молоко").
-   - "edit_title": User wants to rename or edit the text of a task (e.g., "Измени задачу 'купить хлеб' на 'купить багет и сыр'").
-   - "set_deadline": User wants to set, change, or postpone the deadline of an existing task (e.g., "Перенеси задачу отчета на послезавтра", "Поставь дедлайн задаче отчет на пятницу в 18:00").
-   - "remove_deadline": User wants to remove the deadline from a task (e.g., "Убери дедлайн у задачи созвон", "Сделай задачу без дедлайна").
+CRITICAL INTENT RULES:
+1. DEFAULT TO "create_task":
+   - Any message stating an action to do (e.g., "Отправить отчет Мари Ванне до 15:23 до вторника", "Купить молоко", "Завтра в три часа созвониться с юристом", "До 25 августа сдать проект") is ALWAYS "create_task".
+   - The presence of deadlines (e.g., "до 15:23", "до вторника", "завтра", "в 18:00") in a task description does NOT mean set_deadline. It is a "create_task" WITH a deadline.
 
-2. "targetQuery": For non-create intents ("complete_task", "uncomplete_task", "delete_task", "edit_title", "set_deadline", "remove_deadline"), extract the concise keyword/phrase identifying which existing task to find in the database (e.g., "отчет", "купить хлеб", "созвон с юристом"). For "create_task", return null.
+2. ONLY use other intents if the user explicitly gives a management command on an existing task:
+   - "set_deadline": ONLY if user explicitly commands to postpone/move/set deadline (e.g., "Перенеси задачу отчета на послезавтра", "Сдвинь дедлайн статьи на завтра 18:00", "Поставь дедлайн задаче отчет на пятницу").
+   - "remove_deadline": ONLY if user explicitly commands to remove deadline (e.g., "Убери дедлайн у задачи отчет", "Сделай задачу созвон без дедлайна").
+   - "complete_task": ONLY if user explicitly commands to complete (e.g., "Поставь галочку на задаче купить хлеб", "Пометь отчет выполненным", "Я сделал созвон").
+   - "uncomplete_task": ONLY if user explicitly commands to uncheck/reactivate (e.g., "Верни задачу купить хлеб в работу", "Сними галочку с задачи").
+   - "delete_task": ONLY if user explicitly commands to delete (e.g., "Удали задачу проверить почту", "Вычеркни молоко").
+   - "edit_title": ONLY if user explicitly commands to rename (e.g., "Измени задачу 'купить хлеб' на 'купить багет'").
 
-3. "title": 
-   - For "create_task": The clean task title with all date/time and filler words removed, capitalized (e.g., "Дописать статью").
-   - For "edit_title": The new title to apply.
-   - For other intents: null.
+3. FIELDS TO RETURN:
+   - "intent": "create_task" | "complete_task" | "uncomplete_task" | "delete_task" | "edit_title" | "set_deadline" | "remove_deadline"
+   - "targetQuery": The keyword identifying the existing task to find (e.g. "отчет", "купить хлеб", "проверить почту"). For "create_task", return null.
+   - "title": Clean capitalized task title without date/time and filler words for "create_task" or new title for "edit_title". Otherwise null.
+   - "deadline": ISO-8601 UTC timestamp calculated relative to ${currentFormatted} in ${timezone}, or null.
+     - "послезавтра" = anchorDate + 2 days.
+     - "завтра" = anchorDate + 1 day.
 
-4. "deadline": The exact ISO-8601 UTC timestamp of the deadline, OR null.
-   - Calculate relative dates ("сегодня", "завтра", "послезавтра" -> anchorDate + 2 days, "в пятницу", "в понедельник", "через 2 часа", "до 15:23") using the user's reference time and timezone: ${currentFormatted}, ${timezone}.
-   - If intent is "remove_deadline" or no deadline was specified/implied, return null.
-
-Return strictly JSON:
+Return strictly valid JSON:
 {
   "intent": "create_task" | "complete_task" | "uncomplete_task" | "delete_task" | "edit_title" | "set_deadline" | "remove_deadline",
   "targetQuery": string | null,
@@ -87,7 +101,7 @@ Return strictly JSON:
           { role: "user", content: trimmed },
         ],
         response_format: { type: "json_object" },
-        temperature: 0.1,
+        temperature: 0.0,
       });
 
       const content = response.choices[0]?.message?.content;
@@ -97,8 +111,8 @@ Return strictly JSON:
 
         return {
           intent: validated.intent,
-          targetQuery: validated.targetQuery || null,
-          title: validated.title?.trim() || trimmed,
+          targetQuery: cleanTargetQuery(validated.targetQuery),
+          title: validated.title?.trim() || (validated.intent === "create_task" ? trimmed : null),
           deadline: validated.deadline || null,
         };
       }
@@ -123,7 +137,6 @@ export function fallbackParser(
 
   // 1. Detect Intent
   let intent: TaskIntent = "create_task";
-  let strippedCommand = lower;
 
   if (
     /(?:^|[^\p{L}\d])(?:пометь|отметь|закрой|поставь\s+галочку|сделал|выполнил)(?:\s+(?:задачу|как|была|уже))?/iu.test(lower) &&
@@ -143,11 +156,11 @@ export function fallbackParser(
   ) {
     intent = "remove_deadline";
   } else if (
-    /(?:^|[^\p{L}\d])(?:перенеси\s+дедлайн|поставь\s+дедлайн|сдвинь\s+дедлайн|измени\s+дедлайн|перенеси\s+задачу|перенеси\s+на|сдвинь\s+на)/iu.test(lower)
+    /(?:^|[^\p{L}\d])(?:перенеси|сдвинь|поставь\s+дедлайн|измени\s+дедлайн|передвинь)/iu.test(lower)
   ) {
     intent = "set_deadline";
   } else if (
-    /(?:^|[^\p{L}\d])(?:переименуй|измени\s+название|поменяй\s+название|измени\s+текст)(?:\s+задачи)?/iu.test(lower)
+    /(?:^|[^\p{L}\d])(?:переименуй|измени\s+название|поменяй\s+название)(?:\s+задачи)?/iu.test(lower)
   ) {
     intent = "edit_title";
   }
@@ -320,7 +333,7 @@ export function fallbackParser(
 
   // Remove command prefixes for intent extraction
   cleanText = cleanText
-    .replace(/(?:^|[^\p{L}\d])(пометь(те)?|отметь(те)?|закрой(те)?|поставь(те)?\s+галочку|сними(те)?\s+галочку|верни(те)?|удали(ть)?|сотри(те)?|вычеркни(те)?|убери(те)?|перенеси(те)?|сдвинь(те)?|измени(те)?|поменяй(те)?|переименуй(те)?|добавь(те)?)(?:\s+(?:задачу|как|обратно|в\s+работу|название|текст|дедлайн))?/giu, " ")
+    .replace(/(?:^|[^\p{L}\d])(пометь(те)?|отметь(те)?|закрой(те)?|поставь(те)?\s+галочку|сними(те)?\s+галочку|верни(те)?|удали(ть)?|сотри(те)?|вычеркни(те)?|убери(те)?|перенеси(те)?|сдвинь(те)?|измени(те)?|поменяй(те)?|переименуй(те)?|добавь(те)?)(?:\s+(?:задачу|как|обратно|в\s+работу|название|текст|дедлайн|срок))?/giu, " ")
     .replace(/(?:^|[^\p{L}\d])(выполненн[а-я]*|сделан[а-я]*|готов[а-я]*|дедлайн[а-я]*|задач[а-я]*)(?:[^\p{L}\d]|$)/giu, " ")
     .replace(/(?:^|[^\p{L}\d])(напомни(ть)?|надо бы|надо|нужно|пожалуйста|срочно|так|блин|слушай|плиз|быстро|не забудь(те)?)(?:[^\p{L}\d]|$)/giu, " ")
     .replace(/\s+/g, " ")
@@ -345,7 +358,7 @@ export function fallbackParser(
 
   return {
     intent,
-    targetQuery: intent === "create_task" ? null : cleanText,
+    targetQuery: intent === "create_task" ? null : cleanTargetQuery(cleanText),
     title: intent === "create_task" || intent === "edit_title" ? capitalized : null,
     deadline,
   };

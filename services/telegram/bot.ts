@@ -119,22 +119,47 @@ export async function executeTaskAction(params: {
   }
 
   // For all other actions: Fetch existing user tasks from Supabase
-  const { data: tasksData, error: fetchError } = await admin
+  const { data: tasksData } = await admin
     .from("tasks")
     .select("*")
     .eq("user_id", profile.id)
     .order("created_at", { ascending: false });
-
-  if (fetchError || !tasksData || tasksData.length === 0) {
-    await ctx.reply("У вас пока нет сохранённых задач в списке.");
-    return;
-  }
 
   const tasks: Task[] = (tasksData as Task[]) || [];
   const searchQuery = parsed.targetQuery || parsed.title || originalInput;
   const matchedTask = findBestMatchingTask(tasks, searchQuery, parsed.intent);
 
   if (!matchedTask) {
+    // If the intent was set_deadline on a new task or empty task list, gracefully create the task
+    if (parsed.intent === "set_deadline" || tasks.length === 0) {
+      const fallbackTitle = parsed.title || originalInput.replace(/(?:^|[^\p{L}\d])(?:перенеси|сдвинь|поставь\s+дедлайн)\s+/giu, "").trim();
+      const capTitle = fallbackTitle.charAt(0).toUpperCase() + fallbackTitle.slice(1);
+
+      const { error: dbError } = await admin.from("tasks").insert({
+        user_id: profile.id,
+        title: capTitle,
+        deadline: parsed.deadline || null,
+        completed: false,
+        source: "telegram",
+        input_type: inputType,
+        original_input: originalInput,
+        transcript: transcript || null,
+      });
+
+      if (!dbError) {
+        const formattedDate = formatDeadline(parsed.deadline, userTimezone);
+        const prefix = inputType === "voice" ? `🎤 <i>«${escapeHtml(transcript || originalInput)}»</i>\n\n` : "";
+        await ctx.reply(
+          `✅ <b>Задача добавлена</b>\n\n` +
+            prefix +
+            `📌 <b>${escapeHtml(capTitle)}</b>\n` +
+            `⏱ Дедлайн: <b>${escapeHtml(formattedDate)}</b>`,
+          { parse_mode: "HTML" }
+        );
+        return;
+      }
+    }
+
     await ctx.reply(
       `❌ Не удалось найти подходящую задачу по запросу <i>«${escapeHtml(searchQuery)}»</i>.\n\n` +
         `Проверьте список задач на сайте или назовите задачу точнее.`,
