@@ -66,8 +66,8 @@ Current user wall-clock time: ${currentFormatted} in timezone ${timezone}.
 
 CRITICAL INTENT RULES:
 1. DEFAULT TO "create_task":
-   - Any message stating an action to do (e.g., "Отправить отчет Мари Ванне до 15:23 до вторника", "Купить молоко", "Через 2 часа проверить рабочую почту", "Завтра в три часа созвониться с юристом", "До 25 августа сдать проект") is ALWAYS "create_task".
-   - The presence of deadlines (e.g., "через 2 часа", "до 15:23", "до вторника", "завтра") in a task description does NOT mean set_deadline. It is a "create_task" WITH a deadline.
+   - Any message stating an action to do (e.g., "Отправить отчет Мари Ванне до 15:23 до вторника", "Купить молоко", "Через 2 часа проверить рабочую почту", "Завтра в три часа созвониться с юристом", "До 25 августа сдать проект", "До 25 августа подготовить документы") is ALWAYS "create_task".
+   - The presence of deadlines (e.g., "до 25 августа", "через 2 часа", "до 15:23", "до вторника", "завтра") in a task description does NOT mean set_deadline. It is a "create_task" WITH a deadline.
 
 2. ONLY use other intents if the user explicitly gives a management command on an existing task:
    - "set_deadline": ONLY if user explicitly commands to postpone/move/set deadline (e.g., "Перенеси задачу отчета на послезавтра", "Сдвинь дедлайн статьи на завтра 18:00", "Поставь дедлайн задаче отчет на пятницу").
@@ -77,12 +77,18 @@ CRITICAL INTENT RULES:
    - "delete_task": ONLY if user explicitly commands to delete (e.g., "Удали задачу проверить почту", "Вычеркни молоко").
    - "edit_title": ONLY if user explicitly commands to rename (e.g., "Измени задачу 'купить хлеб' на 'купить багет'").
 
-3. DEADLINE FORMAT:
-   - Calculate deadline in user's LOCAL wall-clock time string format: "YYYY-MM-DD HH:mm:ss" (e.g. "2026-08-17 17:49:00").
-   - For relative offsets like "через 2 часа": add 2 hours to ${currentFormatted}.
-   - For "послезавтра": add 2 days.
-   - For "завтра": add 1 day.
+3. DEADLINE & TIME RESOLUTION RULES (RUSSIAN SEMANTICS):
+   - Calculate deadline in user's LOCAL wall-clock time format: "YYYY-MM-DD HH:mm:ss".
+   - "до [Дата/Число]" (e.g., "до 25 августа", "до 1 сентября") WITHOUT exact hour means BEFORE that date arrives, so deadline is the PRECEDING day at 23:59:00 (e.g. "до 25 августа" -> "2026-08-24 23:59:00").
+   - "до [День недели]" (e.g., "до вторника") WITHOUT exact hour means BEFORE that weekday arrives, so deadline is the preceding day at 23:59:00.
+   - If exact time is stated with "до" (e.g., "до 15:23 до вторника", "до 25 августа 18:00"), use that exact hour on that day (e.g., Tuesday 15:23:00).
+   - "в [День недели]" (e.g., "во вторник", "в пятницу") without exact hour -> that day at 18:00:00.
+   - "[Дата/Число]" without "до" (e.g., "25 августа подготовить документы") -> "2026-08-25 18:00:00".
+   - "послезавтра" without hour -> anchorDate + 2 days at 18:00:00.
+   - "завтра" without hour -> anchorDate + 1 day at 18:00:00.
+   - "через X часов/минут" -> anchorDate + X (exact calculated hour and minute).
    - If no deadline or intent is "remove_deadline", return null.
+   - NEVER copy current time's random minutes/hours unless calculating relative offset "через X".
 
 4. FIELDS TO RETURN:
    - "intent": "create_task" | "complete_task" | "uncomplete_task" | "delete_task" | "edit_title" | "set_deadline" | "remove_deadline"
@@ -117,9 +123,7 @@ Return strictly valid JSON:
         let finalDeadlineIso: string | null = null;
         if (validated.deadline && validated.intent !== "remove_deadline") {
           const raw = validated.deadline.trim();
-          // Normalize to YYYY-MM-DD HH:mm:ss
           if (raw.includes("T") || raw.endsWith("Z")) {
-            // If LLM returned ISO, parse local parts
             const cleanStr = raw.replace("T", " ").replace("Z", "").slice(0, 19);
             const utcDate = fromZonedTime(cleanStr, timezone);
             finalDeadlineIso = utcDate.toISOString();
@@ -193,6 +197,7 @@ export function fallbackParser(
   let targetHour: number | null = null;
   let targetMinute: number | null = null;
   let isDirectRelativeOffset = false;
+  let hasDoPreposition = false;
   const matchedSpans: string[] = [];
 
   // Offset ("через 2 часа", "через 30 минут", "через 3 дня")
@@ -219,7 +224,7 @@ export function fallbackParser(
     matchedSpans.push(offsetDayMatch[1]);
   }
 
-  // Month date: "25 августа", "до 15 сентября"
+  // Month date: "25 августа", "до 25 августа"
   if (!targetDate) {
     const monthMatch = lower.match(/(?:^|[^\p{L}\d])((?:до|к|в|во|на)?\s*(\d{1,2})\s*(январ[яе]|феврал[яе]|март[ае]|апрел[яе]|ма[яе]|июн[яе]|июл[яе]|август[ае]|сентябр[яе]|октябр[яе]|ноябр[яе]|декабр[яе]))(?:[^\p{L}\d]|$)/iu);
     if (monthMatch) {
@@ -235,6 +240,9 @@ export function fallbackParser(
         let dt = new Date(currentYear, monthIndex, day);
         if (dt.getTime() < anchorDate.getTime() - 86400000) {
           dt = new Date(currentYear + 1, monthIndex, day);
+        }
+        if (monthMatch[1]?.toLowerCase().startsWith("до") || monthMatch[1]?.toLowerCase().startsWith("к")) {
+          hasDoPreposition = true;
         }
         targetDate = dt;
         matchedSpans.push(monthMatch[1]);
@@ -256,6 +264,9 @@ export function fallbackParser(
         const currentDay = anchorDate.getDay();
         const diff = (dayNum - currentDay + 7) % 7 || 7;
         targetDate = addDays(anchorDate, diff);
+        if (dowMatch[1]?.toLowerCase().startsWith("до") || dowMatch[1]?.toLowerCase().startsWith("к")) {
+          hasDoPreposition = true;
+        }
         matchedSpans.push(dowMatch[1]);
       }
     }
@@ -339,10 +350,21 @@ export function fallbackParser(
     if (isDirectRelativeOffset) {
       deadline = targetDate.toISOString();
     } else {
-      const finalHour = targetHour !== null ? targetHour : 18;
-      const finalMinute = targetMinute !== null ? targetMinute : 0;
+      // If "до [Дата]" without explicit hour was used: deadline is PRECEDING day at 23:59:00
+      let finalDate = targetDate;
+      let finalHour = 18;
+      let finalMinute = 0;
 
-      const dateStr = formatInTimeZone(targetDate, timezone, "yyyy-MM-dd");
+      if (hasDoPreposition && targetHour === null) {
+        finalDate = addDays(targetDate, -1);
+        finalHour = 23;
+        finalMinute = 59;
+      } else if (targetHour !== null) {
+        finalHour = targetHour;
+        finalMinute = targetMinute !== null ? targetMinute : 0;
+      }
+
+      const dateStr = formatInTimeZone(finalDate, timezone, "yyyy-MM-dd");
       const hourStr = String(finalHour).padStart(2, "0");
       const minStr = String(finalMinute).padStart(2, "0");
 
