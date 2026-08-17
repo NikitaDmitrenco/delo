@@ -2,15 +2,25 @@ import OpenAI from "openai";
 import { z } from "zod";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { addDays, addMinutes } from "date-fns";
-import { ParsedTaskResult } from "@/types";
+import { ParsedTaskResult, TaskIntent } from "@/types";
 
 const parsedTaskSchema = z.object({
-  title: z.string().min(1),
-  deadline: z.string().nullable(),
+  intent: z.enum([
+    "create_task",
+    "complete_task",
+    "uncomplete_task",
+    "delete_task",
+    "edit_title",
+    "set_deadline",
+    "remove_deadline",
+  ]),
+  targetQuery: z.string().nullable().optional(),
+  title: z.string().nullable().optional(),
+  deadline: z.string().nullable().optional(),
 });
 
 /**
- * Parses user natural language input (Russian or English) and extracts structured task title and deadline.
+ * Parses user natural language input (Russian or English) and extracts structured intent, task title, and deadline.
  */
 export async function parseTaskInput(params: {
   input: string;
@@ -38,23 +48,34 @@ export async function parseTaskInput(params: {
       const openai = new OpenAI({ apiKey });
 
       const systemPrompt = `
-You are the AI task extraction engine for "Delo", an intelligent minimalist task manager.
-Your role is to extract:
-1. "title": The clean, concise task description in Russian.
-   - Strip out ALL date and time expressions from the title completely (e.g. "отправить Отчет Мари Ванне до 15:23 до вторника" -> "Отправить Отчет Мари Ванне", "Сегодня до 20:00 дописать статью" -> "Дописать статью").
-   - Strip conversational filler ("так", "блин", "надо бы", "надо", "слушай", "пожалуйста", "напомни", "срочно").
-   - Keep proper nouns, names, and objects intact (e.g. "Мари Ванне", "договор с ИП Иванов").
-   - Capitalize the first letter.
-2. "deadline": The exact ISO-8601 UTC timestamp of the deadline, OR null.
-   
-CRITICAL RULES FOR DEADLINE:
-- Current user reference time: ${currentFormatted} in timezone: ${timezone}.
-- Calculate relative dates ("сегодня", "завтра", "послезавтра", "во вторник", "до вторника", "в пятницу", "через 2 часа", "до 15:23" -> 15:23 on target day) using the user's timezone (${timezone}), then convert to ISO-8601 UTC string.
-- NEVER INVENT A DEADLINE. If the user did not specify or clearly imply a deadline (e.g. "Позвонить маме", "Купить молоко"), return null for deadline.
+You are the AI Intent & Task Engine for "Delo", an intelligent minimalist task manager.
+Your role is to classify the user's intent and extract structured data:
+
+1. "intent": One of:
+   - "create_task": User wants to add a new task (e.g., "Завтра в 15:00 созвон", "Добавь задачу купить хлеб").
+   - "complete_task": User wants to mark an existing task as completed (e.g., "Пометь задачу отчет Мари Ванне выполненной", "Поставь галочку на задаче купить хлеб", "Сделал статью").
+   - "uncomplete_task": User wants to uncheck / reactivate a task (e.g., "Верни отчет в работу", "Сними галочку с задачи").
+   - "delete_task": User wants to delete a task (e.g., "Удали задачу про юриста", "Вычеркни молоко").
+   - "edit_title": User wants to rename or edit the text of a task (e.g., "Измени задачу 'купить хлеб' на 'купить багет и сыр'").
+   - "set_deadline": User wants to set, change, or postpone the deadline of an existing task (e.g., "Перенеси задачу отчета на послезавтра", "Поставь дедлайн задаче отчет на пятницу в 18:00").
+   - "remove_deadline": User wants to remove the deadline from a task (e.g., "Убери дедлайн у задачи созвон", "Сделай задачу без дедлайна").
+
+2. "targetQuery": For non-create intents ("complete_task", "uncomplete_task", "delete_task", "edit_title", "set_deadline", "remove_deadline"), extract the concise keyword/phrase identifying which existing task to find in the database (e.g., "отчет", "купить хлеб", "созвон с юристом"). For "create_task", return null.
+
+3. "title": 
+   - For "create_task": The clean task title with all date/time and filler words removed, capitalized (e.g., "Дописать статью").
+   - For "edit_title": The new title to apply.
+   - For other intents: null.
+
+4. "deadline": The exact ISO-8601 UTC timestamp of the deadline, OR null.
+   - Calculate relative dates ("сегодня", "завтра", "послезавтра" -> anchorDate + 2 days, "в пятницу", "в понедельник", "через 2 часа", "до 15:23") using the user's reference time and timezone: ${currentFormatted}, ${timezone}.
+   - If intent is "remove_deadline" or no deadline was specified/implied, return null.
 
 Return strictly JSON:
 {
-  "title": string,
+  "intent": "create_task" | "complete_task" | "uncomplete_task" | "delete_task" | "edit_title" | "set_deadline" | "remove_deadline",
+  "targetQuery": string | null,
+  "title": string | null,
   "deadline": string | null
 }
 `;
@@ -75,12 +96,14 @@ Return strictly JSON:
         const validated = parsedTaskSchema.parse(parsedJson);
 
         return {
-          title: validated.title.trim(),
-          deadline: validated.deadline,
+          intent: validated.intent,
+          targetQuery: validated.targetQuery || null,
+          title: validated.title?.trim() || trimmed,
+          deadline: validated.deadline || null,
         };
       }
     } catch (error) {
-      console.warn("OpenAI API call error (quota or network), falling back to universal NLP rule parser:", error);
+      console.warn("OpenAI API call error, falling back to deterministic intent parser:", error);
     }
   }
 
@@ -89,21 +112,53 @@ Return strictly JSON:
 }
 
 /**
- * Universal Russian natural language date & time task parser with full grammatical declension support.
+ * Universal deterministic parser for intent classification, target query extraction, and date/time calculation.
  */
 export function fallbackParser(
   input: string,
   anchorDate: Date = new Date(),
   timezone: string = "Europe/Chisinau"
 ): ParsedTaskResult {
-  const lower = input.toLowerCase();
+  const lower = input.toLowerCase().trim();
 
+  // 1. Detect Intent
+  let intent: TaskIntent = "create_task";
+  let strippedCommand = lower;
+
+  if (
+    /(?:^|[^\p{L}\d])(?:пометь|отметь|закрой|поставь\s+галочку|сделал|выполнил)(?:\s+(?:задачу|как|была|уже))?/iu.test(lower) &&
+    /выполненн|сделан|готов|галочк/iu.test(lower)
+  ) {
+    intent = "complete_task";
+  } else if (
+    /(?:^|[^\p{L}\d])(?:верни|сними\s+галочку|не\s+выполнен|отмени\s+выполнение)(?:\s+(?:задачу|обратно|в\s+работу))?/iu.test(lower)
+  ) {
+    intent = "uncomplete_task";
+  } else if (
+    /(?:^|[^\p{L}\d])(?:удали|сотри|вычеркни|убери\s+задачу)(?:\s+задачу)?/iu.test(lower)
+  ) {
+    intent = "delete_task";
+  } else if (
+    /(?:^|[^\p{L}\d])(?:убери\s+дедлайн|без\s+дедлайна|сними\s+дедлайн|удали\s+дедлайн|сбрось\s+дедлайн)/iu.test(lower)
+  ) {
+    intent = "remove_deadline";
+  } else if (
+    /(?:^|[^\p{L}\d])(?:перенеси\s+дедлайн|поставь\s+дедлайн|сдвинь\s+дедлайн|измени\s+дедлайн|перенеси\s+задачу|перенеси\s+на|сдвинь\s+на)/iu.test(lower)
+  ) {
+    intent = "set_deadline";
+  } else if (
+    /(?:^|[^\p{L}\d])(?:переименуй|измени\s+название|поменяй\s+название|измени\s+текст)(?:\s+задачи)?/iu.test(lower)
+  ) {
+    intent = "edit_title";
+  }
+
+  // 2. Date & Time Parsing
   let targetDate: Date | null = null;
   let targetHour: number | null = null;
   let targetMinute: number | null = null;
   const matchedSpans: string[] = [];
 
-  // 1. Relative offset ("через 2 часа", "через 30 минут", "через 3 дня")
+  // Offset ("через 2 часа", "через 30 минут", "через 3 дня")
   const offsetHourMatch = lower.match(/(?:^|[^\p{L}\d])(через\s+(\d+|полтора|один|два|три|четыре|пять)\s*(?:часа|часов|час|ч))(?:[^\p{L}\d]|$)/iu);
   const offsetMinMatch = lower.match(/(?:^|[^\p{L}\d])(через\s+(\d+|полчаса|двадцать|тридцать|сорок|пятьдесят)\s*(?:минут|минуты|минуту|мин))(?:[^\p{L}\d]|$)/iu);
   const offsetDayMatch = lower.match(/(?:^|[^\p{L}\d])(через\s+(\d+|один|два|три|четыре|неделю|недели)\s*(?:день|дня|дней|нед))(?:[^\p{L}\d]|$)/iu);
@@ -125,7 +180,7 @@ export function fallbackParser(
     matchedSpans.push(offsetDayMatch[1]);
   }
 
-  // 2. Calendar Month Date: "25 августа", "до 15 сентября", "к 1 мая"
+  // Month date: "25 августа", "до 15 сентября"
   if (!targetDate) {
     const monthMatch = lower.match(/(?:^|[^\p{L}\d])((?:до|к|в|во|на)?\s*(\d{1,2})\s*(январ[яе]|феврал[яе]|март[ае]|апрел[яе]|ма[яе]|июн[яе]|июл[яе]|август[ае]|сентябр[яе]|октябр[яе]|ноябр[яе]|декабр[яе]))(?:[^\p{L}\d]|$)/iu);
     if (monthMatch) {
@@ -148,19 +203,13 @@ export function fallbackParser(
     }
   }
 
-  // 3. Weekdays with all Russian grammatical cases (до вторника, во вторник, к пятнице, в след. четверг)
+  // Weekdays: "до вторника", "во вторник", "к пятнице"
   if (!targetDate) {
     const dowMatch = lower.match(/(?:^|[^\p{L}\d])((?:до|к|в|во|на)?\s*(?:следующ[а-я]*|будущ[а-я]*|эт[а-я]*)?\s*(понедельник[а-я]*|вторник[а-я]*|сред[а-я]*|четверг[а-я]*|пятниц[а-я]*|суббот[а-я]*|воскресень[а-я]*|пн|вт|ср|чт|пт|сб|вс))(?:[^\p{L}\d]|$)/iu);
     if (dowMatch) {
       const kw = dowMatch[2].toLowerCase();
       const dowMap: Record<string, number> = {
-        пон: 1, пн: 1,
-        вто: 2, вт: 2,
-        сре: 3, ср: 3,
-        чет: 4, чт: 4,
-        пят: 5, пт: 5,
-        суб: 6, сб: 6,
-        вос: 0, вс: 0,
+        пон: 1, пн: 1, вто: 2, вт: 2, сре: 3, ср: 3, чет: 4, чт: 4, пят: 5, пт: 5, суб: 6, сб: 6, вос: 0, вс: 0,
       };
       const prefix = Object.keys(dowMap).find((k) => kw.startsWith(k));
       if (prefix !== undefined) {
@@ -173,7 +222,7 @@ export function fallbackParser(
     }
   }
 
-  // 4. Relative days: "послезавтра", "завтра", "сегодня"
+  // Relative days: "послезавтра", "завтра", "сегодня"
   if (!targetDate) {
     const dayMatch = lower.match(/(?:^|[^\p{L}\d])((?:до|к|на)?\s*(послезавтра|завтра|сегодня))(?:[^\p{L}\d]|$)/iu);
     if (dayMatch) {
@@ -185,8 +234,7 @@ export function fallbackParser(
     }
   }
 
-  // 5. Exact time parsing
-  // 5a. Format: 15:23, 20:00, 15.30, до 15:23, к 20:00, в 18:30
+  // Exact time: 15:23, 20:00, до 15:23, в 18:30
   const timeDigitsMatch = lower.match(/(?:^|[^\p{L}\d])((?:в|во|до|к|около|на)?\s*(\d{1,2})[:.](\d{2}))(?:[^\p{L}\d]|$)/iu);
   if (timeDigitsMatch) {
     targetHour = parseInt(timeDigitsMatch[2], 10);
@@ -194,7 +242,7 @@ export function fallbackParser(
     matchedSpans.push(timeDigitsMatch[1]);
   }
 
-  // 5b. Format: "в три часа дня", "в 3 часа дня", "в 8 вечера", "в 9 утра"
+  // Word hours: "в три часа дня", "в 8 вечера"
   if (targetHour === null) {
     const timeWordMatch = lower.match(/(?:^|[^\p{L}\d])((?:в|во|до|к|около)?\s*(один|два|три|четыре|пять|шесть|семь|восемь|девять|десять|одиннадцать|двенадцать|\d{1,2})\s*(?:часа|часов|час)?\s*(дня|вечера|утра|ночи)?)(?:[^\p{L}\d]|$)/iu);
     if (timeWordMatch && (timeWordMatch[3] || lower.includes("часа") || lower.includes("часов") || lower.includes("дня"))) {
@@ -212,7 +260,7 @@ export function fallbackParser(
     }
   }
 
-  // 5c. Format: "до 20", "в 18", "к 17"
+  // Short hour: "до 20", "в 18"
   if (targetHour === null) {
     const shortHourMatch = lower.match(/(?:^|[^\p{L}\d])((?:в|до|к)\s+(\d{1,2}))(?:[^\p{L}\d]|$)/iu);
     if (shortHourMatch) {
@@ -225,7 +273,7 @@ export function fallbackParser(
     }
   }
 
-  // 5d. Named times: "к обеду", "до вечера", "утром", "до конца дня"
+  // Named times: "к обеду", "до вечера", "утром"
   if (targetHour === null) {
     const namedMatch = lower.match(/(?:^|[^\p{L}\d])((?:к|до|в)?\s*(?:обед[ау]?|вечер(?:у|ом|а)?|утром|конц[ау]\s*дня))(?:[^\p{L}\d]|$)/iu);
     if (namedMatch) {
@@ -238,7 +286,7 @@ export function fallbackParser(
     }
   }
 
-  // If time was given without explicit date, default to today (or tomorrow if already passed in user timezone)
+  // Default hour to user timezone if time was given without date
   if (targetHour !== null && !targetDate) {
     targetDate = new Date(anchorDate);
     const currentHourInUserTz = parseInt(formatInTimeZone(anchorDate, timezone, "HH"), 10);
@@ -247,9 +295,8 @@ export function fallbackParser(
     }
   }
 
-  // Construct ISO deadline strictly in user's timezone
   let deadline: string | null = null;
-  if (targetDate) {
+  if (targetDate && intent !== "remove_deadline") {
     const finalHour = targetHour !== null ? targetHour : 18;
     const finalMinute = targetMinute !== null ? targetMinute : 0;
 
@@ -262,23 +309,26 @@ export function fallbackParser(
     deadline = utcDate.toISOString();
   }
 
-  // 6. Clean task title: remove all matched date/time phrases
-  let cleanTitle = input;
+  // 3. Extract Target Query and Clean Title
+  let cleanText = input;
 
+  // Remove matched date/time spans
   for (const span of matchedSpans) {
     const escaped = span.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    cleanTitle = cleanTitle.replace(new RegExp(`(?:^|[^\\p{L}\\d])(${escaped})(?:[^\\p{L}\\d]|$)`, "giu"), " ");
+    cleanText = cleanText.replace(new RegExp(`(?:^|[^\\p{L}\\d])(${escaped})(?:[^\\p{L}\\d]|$)`, "giu"), " ");
   }
 
-  // Remove filler words & orphaned time prepositions
-  cleanTitle = cleanTitle
+  // Remove command prefixes for intent extraction
+  cleanText = cleanText
+    .replace(/(?:^|[^\p{L}\d])(пометь(те)?|отметь(те)?|закрой(те)?|поставь(те)?\s+галочку|сними(те)?\s+галочку|верни(те)?|удали(ть)?|сотри(те)?|вычеркни(те)?|убери(те)?|перенеси(те)?|сдвинь(те)?|измени(те)?|поменяй(те)?|переименуй(те)?|добавь(те)?)(?:\s+(?:задачу|как|обратно|в\s+работу|название|текст|дедлайн))?/giu, " ")
+    .replace(/(?:^|[^\p{L}\d])(выполненн[а-я]*|сделан[а-я]*|готов[а-я]*|дедлайн[а-я]*|задач[а-я]*)(?:[^\p{L}\d]|$)/giu, " ")
     .replace(/(?:^|[^\p{L}\d])(напомни(ть)?|надо бы|надо|нужно|пожалуйста|срочно|так|блин|слушай|плиз|быстро|не забудь(те)?)(?:[^\p{L}\d]|$)/giu, " ")
     .replace(/\s+/g, " ")
     .replace(/^[–—\-:\s,]+|[–—\-:\s,]+$/g, "")
     .trim();
 
-  // Verb normalization for leading imperative verbs
-  cleanTitle = cleanTitle
+  // Verb normalization for creation
+  cleanText = cleanText
     .replace(/^позвони\b/iu, "Позвонить")
     .replace(/^напиши\b/iu, "Написать")
     .replace(/^отправь\b/iu, "Отправить")
@@ -287,14 +337,16 @@ export function fallbackParser(
     .replace(/^сделай\b/iu, "Сделать")
     .replace(/^проверь\b/iu, "Проверить");
 
-  if (!cleanTitle || cleanTitle.length < 2) {
-    cleanTitle = input.trim();
+  if (!cleanText || cleanText.length < 2) {
+    cleanText = input.trim();
   }
 
-  cleanTitle = cleanTitle.charAt(0).toUpperCase() + cleanTitle.slice(1);
+  const capitalized = cleanText.charAt(0).toUpperCase() + cleanText.slice(1);
 
   return {
-    title: cleanTitle,
+    intent,
+    targetQuery: intent === "create_task" ? null : cleanText,
+    title: intent === "create_task" || intent === "edit_title" ? capitalized : null,
     deadline,
   };
 }

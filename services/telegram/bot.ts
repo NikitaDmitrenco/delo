@@ -3,10 +3,12 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { parseTaskInput } from "@/services/ai/parser";
 import { transcribeAudio } from "@/services/audio/whisper";
 import { formatDeadline } from "@/lib/utils/dates";
+import { findBestMatchingTask } from "@/lib/utils/matching";
+import { ParsedTaskResult, Task, TaskInputType } from "@/types";
 import crypto from "crypto";
 
 const token = process.env.TELEGRAM_BOT_TOKEN || "placeholder_token";
-const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://delo-dusky.vercel.app";
 
 export const bot = new Bot(token);
 
@@ -26,7 +28,6 @@ export function escapeHtml(str: string): string {
  */
 export function normalizePhone(rawPhone: string): string {
   const digits = rawPhone.replace(/\D/g, "");
-  // If starts with 8 and length is 11 (Russian format), normalize to 7
   if (digits.length === 11 && digits.startsWith("8")) {
     return "7" + digits.slice(1);
   }
@@ -56,7 +57,6 @@ export async function findProfile(telegramUserId: number, rawPhone?: string | nu
       const matched = allProfiles?.find((p) => p.phone && normalizePhone(p.phone) === cleanInput);
 
       if (matched) {
-        // Link this telegram_user_id to the found profile in database
         await admin
           .from("profiles")
           .update({ telegram_user_id: telegramUserId })
@@ -68,6 +68,150 @@ export async function findProfile(telegramUserId: number, rawPhone?: string | nu
   }
 
   return null;
+}
+
+/**
+ * Executes the parsed intent action against the user's database.
+ */
+export async function executeTaskAction(params: {
+  ctx: any;
+  admin: ReturnType<typeof createAdminClient>;
+  profile: any;
+  parsed: ParsedTaskResult;
+  originalInput: string;
+  inputType: TaskInputType;
+  userTimezone: string;
+  transcript?: string | null;
+}) {
+  const { ctx, admin, profile, parsed, originalInput, inputType, userTimezone, transcript } = params;
+
+  // 1. Intent: CREATE TASK
+  if (parsed.intent === "create_task") {
+    const title = parsed.title || originalInput;
+    const { error: dbError } = await admin.from("tasks").insert({
+      user_id: profile.id,
+      title: title,
+      deadline: parsed.deadline || null,
+      completed: false,
+      source: "telegram",
+      input_type: inputType,
+      original_input: originalInput,
+      transcript: transcript || null,
+    });
+
+    if (dbError) {
+      console.error("DB error saving task:", dbError);
+      await ctx.reply("Не удалось сохранить задачу. Попробуй ещё раз.");
+      return;
+    }
+
+    const formattedDate = formatDeadline(parsed.deadline, userTimezone);
+    const prefix = inputType === "voice" ? `🎤 <i>«${escapeHtml(transcript || originalInput)}»</i>\n\n` : "";
+
+    await ctx.reply(
+      `✅ <b>Задача добавлена</b>\n\n` +
+        prefix +
+        `📌 <b>${escapeHtml(title)}</b>\n` +
+        `⏱ Дедлайн: <b>${escapeHtml(formattedDate)}</b>`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  // For all other actions: Fetch existing user tasks from Supabase
+  const { data: tasksData, error: fetchError } = await admin
+    .from("tasks")
+    .select("*")
+    .eq("user_id", profile.id)
+    .order("created_at", { ascending: false });
+
+  if (fetchError || !tasksData || tasksData.length === 0) {
+    await ctx.reply("У вас пока нет сохранённых задач в списке.");
+    return;
+  }
+
+  const tasks: Task[] = (tasksData as Task[]) || [];
+  const searchQuery = parsed.targetQuery || parsed.title || originalInput;
+  const matchedTask = findBestMatchingTask(tasks, searchQuery, parsed.intent);
+
+  if (!matchedTask) {
+    await ctx.reply(
+      `❌ Не удалось найти подходящую задачу по запросу <i>«${escapeHtml(searchQuery)}»</i>.\n\n` +
+        `Проверьте список задач на сайте или назовите задачу точнее.`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  // 2. Intent: COMPLETE TASK (Отметить выполненной / галочка)
+  if (parsed.intent === "complete_task") {
+    await admin.from("tasks").update({ completed: true }).eq("id", matchedTask.id);
+    await ctx.reply(
+      `✅ <b>Задача отмечена выполненной!</b>\n\n` +
+        `📌 <s>${escapeHtml(matchedTask.title)}</s>`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  // 3. Intent: UNCOMPLETE TASK (Снять отметку выполнения / вернуть в работу)
+  if (parsed.intent === "uncomplete_task") {
+    await admin.from("tasks").update({ completed: false }).eq("id", matchedTask.id);
+    await ctx.reply(
+      `🔄 <b>Задача возвращена в работу!</b>\n\n` +
+        `📌 <b>${escapeHtml(matchedTask.title)}</b>`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  // 4. Intent: DELETE TASK (Удалить задачу)
+  if (parsed.intent === "delete_task") {
+    await admin.from("tasks").delete().eq("id", matchedTask.id);
+    await ctx.reply(
+      `🗑️ <b>Задача удалена</b>\n\n` +
+        `📌 <s>${escapeHtml(matchedTask.title)}</s>`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  // 5. Intent: SET / UPDATE DEADLINE (Установить / перенести дедлайн)
+  if (parsed.intent === "set_deadline") {
+    await admin.from("tasks").update({ deadline: parsed.deadline }).eq("id", matchedTask.id);
+    const formattedDate = formatDeadline(parsed.deadline, userTimezone);
+    await ctx.reply(
+      `⏱ <b>Дедлайн обновлён</b>\n\n` +
+        `📌 <b>${escapeHtml(matchedTask.title)}</b>\n` +
+        `⏱ Новый дедлайн: <b>${escapeHtml(formattedDate)}</b>`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  // 6. Intent: REMOVE DEADLINE (Снять дедлайн)
+  if (parsed.intent === "remove_deadline") {
+    await admin.from("tasks").update({ deadline: null }).eq("id", matchedTask.id);
+    await ctx.reply(
+      `⏱ <b>Дедлайн снят</b>\n\n` +
+        `📌 <b>${escapeHtml(matchedTask.title)}</b> (Без дедлайна)`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  // 7. Intent: EDIT TITLE (Изменить название задачи)
+  if (parsed.intent === "edit_title") {
+    const newTitle = parsed.title || originalInput;
+    await admin.from("tasks").update({ title: newTitle }).eq("id", matchedTask.id);
+    await ctx.reply(
+      `✏️ <b>Название задачи изменено</b>\n\n` +
+        `Было: <i>${escapeHtml(matchedTask.title)}</i>\n` +
+        `Стало: <b>${escapeHtml(newTitle)}</b>`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
 }
 
 /**
@@ -84,13 +228,17 @@ export function setupBot(botInstance: Bot = bot) {
     const admin = createAdminClient();
 
     try {
-      // Check if user is already linked
       const profile = await findProfile(telegramUserId);
 
       if (profile) {
         await ctx.reply(
           `Привет, ${escapeHtml(from.first_name || "друг")}! Я Delo.\n\n` +
-            `Просто напиши или скажи голосом, что нужно сделать — я сам определю задачу и дедлайн.`,
+            `Просто напиши или скажи голосом, что нужно сделать — я сам определю действие, задачу и дедлайн.\n\n` +
+            `💡 <b>Примеры команд:</b>\n` +
+            `• <i>«Завтра в 15:00 созвониться с юристом»</i>\n` +
+            `• <i>«Перенеси задачу отчета на послезавтра»</i>\n` +
+            `• <i>«Поставь галочку на задаче купить молоко»</i>\n` +
+            `• <i>«Удали задачу про договор»</i>`,
           {
             reply_markup: { remove_keyboard: true },
             parse_mode: "HTML",
@@ -114,14 +262,12 @@ export function setupBot(botInstance: Bot = bot) {
       const registerUrl = `${appUrl}/register?token=${linkingToken}`;
       const isHttps = registerUrl.startsWith("https://");
 
-      // Inline keyboard for web registration
       const inlineKeyboard = new InlineKeyboard();
       if (isHttps) {
         inlineKeyboard.url("Создать аккаунт на сайте", registerUrl).row();
       }
       inlineKeyboard.text("Я создал аккаунт", "check_link_status");
 
-      // Reply keyboard with 1-click Contact Sharing
       const contactKeyboard = new Keyboard()
         .requestContact("📱 Поделиться номером для привязки")
         .resized()
@@ -141,7 +287,6 @@ export function setupBot(botInstance: Bot = bot) {
         parse_mode: "HTML",
       });
 
-      // Send inline button for verification
       await ctx.reply("После создания аккаунта на сайте нажмите кнопку подтверждения:", {
         reply_markup: inlineKeyboard,
       });
@@ -163,7 +308,6 @@ export function setupBot(botInstance: Bot = bot) {
     try {
       await ctx.replyWithChatAction("typing");
 
-      // Search and link profile by phone number
       const profile = await findProfile(telegramUserId, phoneNumber);
 
       if (profile) {
@@ -174,7 +318,7 @@ export function setupBot(botInstance: Bot = bot) {
           `✅ <b>Аккаунт найден и успешно привязан!</b>\n\n` +
             `👤 Пользователь: <b>${usernameDisplay}</b>\n` +
             `📱 Телефон: <b>${phoneDisplay}</b>\n\n` +
-            `Теперь ты можешь отправлять мне задачи текстом или голосовым сообщением.`,
+            `Теперь ты можешь управлять задачами текстом или голосовыми сообщениями!`,
           {
             reply_markup: { remove_keyboard: true },
             parse_mode: "HTML",
@@ -240,14 +384,12 @@ export function setupBot(botInstance: Bot = bot) {
     const from = ctx.from;
     const text = ctx.message.text.trim();
 
-    // Ignore commands like /start /help
     if (text.startsWith("/")) return;
 
     const telegramUserId = from.id;
     const admin = createAdminClient();
 
     try {
-      // 1. Verify user is linked in database
       const profile = await findProfile(telegramUserId);
 
       if (!profile) {
@@ -261,7 +403,6 @@ export function setupBot(botInstance: Bot = bot) {
 
       await ctx.replyWithChatAction("typing");
 
-      // 2. Parse task with AI
       const userTimezone = profile.timezone || "Europe/Chisinau";
       const parsed = await parseTaskInput({
         input: text,
@@ -269,36 +410,15 @@ export function setupBot(botInstance: Bot = bot) {
         timezone: userTimezone,
       });
 
-      if (!parsed.title) {
-        await ctx.reply("Не смог понять задачу. Попробуй сформулировать её немного конкретнее.");
-        return;
-      }
-
-      // 3. Save task to Supabase
-      const { error: dbError } = await admin.from("tasks").insert({
-        user_id: profile.id,
-        title: parsed.title,
-        deadline: parsed.deadline || null,
-        completed: false,
-        source: "telegram",
-        input_type: "text",
-        original_input: text,
+      await executeTaskAction({
+        ctx,
+        admin,
+        profile,
+        parsed,
+        originalInput: text,
+        inputType: "text",
+        userTimezone,
       });
-
-      if (dbError) {
-        console.error("DB error saving task:", dbError);
-        await ctx.reply("Не удалось сохранить задачу. Попробуй ещё раз.");
-        return;
-      }
-
-      // 4. Send formatted confirmation
-      const formattedDate = formatDeadline(parsed.deadline, userTimezone);
-      await ctx.reply(
-        `✅ <b>Задача добавлена</b>\n\n` +
-          `📌 <b>${escapeHtml(parsed.title)}</b>\n` +
-          `⏱ Дедлайн: <b>${escapeHtml(formattedDate)}</b>`,
-        { parse_mode: "HTML" }
-      );
     } catch (error: any) {
       console.error("Bot text handling error:", error);
       await ctx.reply("Не удалось обработать задачу. Попробуй переформулировать её.");
@@ -312,7 +432,6 @@ export function setupBot(botInstance: Bot = bot) {
     const admin = createAdminClient();
 
     try {
-      // 1. Verify user is linked in database
       const profile = await findProfile(telegramUserId);
 
       if (!profile) {
@@ -326,9 +445,7 @@ export function setupBot(botInstance: Bot = bot) {
 
       await ctx.replyWithChatAction("record_voice");
 
-      // 2. Download voice audio from Telegram
       const fileInfo = await ctx.getFile();
-
       if (!fileInfo.file_path) {
         throw new Error("Не удалось получить путь к аудиофайлу");
       }
@@ -338,9 +455,7 @@ export function setupBot(botInstance: Bot = bot) {
       const arrayBuffer = await audioResponse.arrayBuffer();
       const audioBuffer = Buffer.from(arrayBuffer);
 
-      // 3. Transcribe audio with Whisper
       const transcript = await transcribeAudio(audioBuffer, "voice.oga", "ru");
-
       if (!transcript || transcript.length < 2) {
         await ctx.reply(
           "Не удалось распознать голосовое сообщение. Попробуй отправить его ещё раз или напиши задачу текстом."
@@ -348,7 +463,6 @@ export function setupBot(botInstance: Bot = bot) {
         return;
       }
 
-      // 4. Parse task with AI
       const userTimezone = profile.timezone || "Europe/Chisinau";
       const parsed = await parseTaskInput({
         input: transcript,
@@ -356,38 +470,16 @@ export function setupBot(botInstance: Bot = bot) {
         timezone: userTimezone,
       });
 
-      if (!parsed.title) {
-        await ctx.reply("Не смог понять задачу из голосового. Попробуй сформулировать точнее.");
-        return;
-      }
-
-      // 5. Save task to Supabase
-      const { error: dbError } = await admin.from("tasks").insert({
-        user_id: profile.id,
-        title: parsed.title,
-        deadline: parsed.deadline || null,
-        completed: false,
-        source: "telegram",
-        input_type: "voice",
-        original_input: transcript,
-        transcript: transcript,
+      await executeTaskAction({
+        ctx,
+        admin,
+        profile,
+        parsed,
+        originalInput: transcript,
+        inputType: "voice",
+        userTimezone,
+        transcript,
       });
-
-      if (dbError) {
-        console.error("DB error saving voice task:", dbError);
-        await ctx.reply("Не удалось сохранить задачу. Попробуй ещё раз.");
-        return;
-      }
-
-      // 6. Send confirmation
-      const formattedDate = formatDeadline(parsed.deadline, userTimezone);
-      await ctx.reply(
-        `✅ <b>Задача добавлена из голосового сообщения</b>\n\n` +
-          `🎤 <i>«${escapeHtml(transcript)}»</i>\n\n` +
-          `📌 <b>${escapeHtml(parsed.title)}</b>\n` +
-          `⏱ Дедлайн: <b>${escapeHtml(formattedDate)}</b>`,
-        { parse_mode: "HTML" }
-      );
     } catch (error: any) {
       console.error("Bot voice handling error:", error);
       await ctx.reply(

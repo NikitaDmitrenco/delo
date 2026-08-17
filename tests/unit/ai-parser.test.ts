@@ -9,7 +9,8 @@ describe("AI Task Parser Engine", () => {
     const input = "Завтра в три часа дня позвонить Ивану и согласовать договор";
     const result = await parseTaskInput({ input, anchorDate, timezone });
 
-    expect(result.title.toLowerCase()).toContain("иван");
+    expect(result.title!).toBeDefined();
+    expect(result.title!.toLowerCase()).toContain("иван");
     expect(result.deadline).not.toBeNull();
     const d = new Date(result.deadline!);
     expect(d.getDate()).toBe(17); // Aug 17 (tomorrow)
@@ -27,7 +28,8 @@ describe("AI Task Parser Engine", () => {
     const input = "Так, завтра где-то к обеду надо позвонить Сергею и узнать насчёт встречи";
     const result = await parseTaskInput({ input, anchorDate, timezone });
 
-    expect(result.title.toLowerCase()).toContain("серге");
+    expect(result.title!).toBeDefined();
+    expect(result.title!.toLowerCase()).toContain("серге");
     expect(result.deadline).not.toBeNull();
   });
 
@@ -41,7 +43,8 @@ describe("AI Task Parser Engine", () => {
     const input = "В пятницу до 17:00 отправить документы бухгалтеру";
     const result = fallbackParser(input, anchorDate, timezone);
 
-    expect(result.title.toLowerCase()).toContain("бухгалтер");
+    expect(result.title!).toBeDefined();
+    expect(result.title!.toLowerCase()).toContain("бухгалтер");
     expect(result.deadline).not.toBeNull();
     const d = new Date(result.deadline!);
     expect(d.getDay()).toBe(5); // Friday

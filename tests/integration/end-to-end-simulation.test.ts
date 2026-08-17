@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { parseTaskInput, fallbackParser } from "@/services/ai/parser";
+import { parseTaskInput } from "@/services/ai/parser";
 import { formatDeadline, isOverdue } from "@/lib/utils/dates";
-import { registerSchema, loginSchema } from "@/lib/validation/auth";
+import { registerSchema } from "@/lib/validation/auth";
 import { createTaskSchema, updateTaskSchema } from "@/lib/validation/task";
 
 describe("DELO End-to-End User Journeys Simulation", () => {
@@ -47,7 +47,8 @@ describe("DELO End-to-End User Journeys Simulation", () => {
       timezone: userA.timezone,
     });
 
-    expect(parsed.title.toLowerCase()).toContain("иван");
+    expect(parsed.title!).toBeDefined();
+    expect(parsed.title!.toLowerCase()).toContain("иван");
     expect(parsed.deadline).not.toBeNull();
 
     // Verify confirmation string format
@@ -65,7 +66,8 @@ describe("DELO End-to-End User Journeys Simulation", () => {
       timezone: userA.timezone,
     });
 
-    expect(parsed.title.toLowerCase()).toContain("отчёт");
+    expect(parsed.title!).toBeDefined();
+    expect(parsed.title!.toLowerCase()).toContain("отчёт");
     expect(parsed.deadline).toBeNull();
   });
 
