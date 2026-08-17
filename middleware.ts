@@ -2,8 +2,14 @@ import { type NextRequest, NextResponse } from "next/server";
 import { updateSession } from "@/lib/supabase/middleware";
 
 export async function middleware(request: NextRequest) {
-  const { supabaseResponse, user } = await updateSession(request);
   const pathname = request.nextUrl.pathname;
+
+  // Bypass API routes (webhooks, crons, auth endpoints)
+  if (pathname.startsWith("/api")) {
+    return NextResponse.next();
+  }
+
+  const { supabaseResponse, user } = await updateSession(request);
 
   const isAuthRoute = pathname.startsWith("/login") || pathname.startsWith("/register");
   const isProtectedRoute = pathname.startsWith("/dashboard") || pathname.startsWith("/settings");
