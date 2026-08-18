@@ -420,39 +420,35 @@ export function setupBot(botInstance: Bot = bot) {
         { parse_mode: "HTML" }
       );
 
-      // Trigger automatic delivery in 20 seconds
-      setTimeout(async () => {
-        try {
-          const { data: currentTask } = await admin
-            .from("tasks")
-            .select("*")
-            .eq("id", insertedTask.id)
-            .single();
+      // Keep serverless function alive and send after exactly 20 seconds
+      await new Promise((resolve) => setTimeout(resolve, 20000));
 
-          if (currentTask && !currentTask.completed && !currentTask.reminder_sent) {
-            const keyboard = new InlineKeyboard()
-              .text("✅ Сделано", `rem_done:${currentTask.id}`)
-              .text("⏱ +30 мин", `rem_snooze:${currentTask.id}`);
+      const { data: currentTask } = await admin
+        .from("tasks")
+        .select("*")
+        .eq("id", insertedTask.id)
+        .single();
 
-            const reminderMsg =
-              `🔔 <b>Подготовка к задаче!</b>\n\n` +
-              `📌 <b>${escapeHtml(currentTask.title)}</b>\n` +
-              `⏱ Дедлайн: <b>${escapeHtml(formattedDeadline)}</b>\n\n` +
-              `⏳ <i>Тайминг:</i>\n` +
-              `• Через <b>25 мин</b> пора приступить к работе.\n` +
-              `• Оценка задачи: <b>~${durationMins} мин</b>.`;
+      if (currentTask && !currentTask.completed && !currentTask.reminder_sent) {
+        const keyboard = new InlineKeyboard()
+          .text("✅ Сделано", `rem_done:${currentTask.id}`)
+          .text("⏱ +30 мин", `rem_snooze:${currentTask.id}`);
 
-            await bot.api.sendMessage(telegramUserId, reminderMsg, {
-              parse_mode: "HTML",
-              reply_markup: keyboard,
-            });
+        const reminderMsg =
+          `🔔 <b>Подготовка к задаче!</b>\n\n` +
+          `📌 <b>${escapeHtml(currentTask.title)}</b>\n` +
+          `⏱ Дедлайн: <b>${escapeHtml(formattedDeadline)}</b>\n\n` +
+          `⏳ <i>Тайминг:</i>\n` +
+          `• Через <b>25 мин</b> пора приступить к работе.\n` +
+          `• Оценка задачи: <b>~${durationMins} мин</b>.`;
 
-            await admin.from("tasks").update({ reminder_sent: true }).eq("id", currentTask.id);
-          }
-        } catch (timerErr) {
-          console.error("Error in test_reminder timeout delivery:", timerErr);
-        }
-      }, 20000);
+        await bot.api.sendMessage(telegramUserId, reminderMsg, {
+          parse_mode: "HTML",
+          reply_markup: keyboard,
+        });
+
+        await admin.from("tasks").update({ reminder_sent: true }).eq("id", currentTask.id);
+      }
     } catch (err) {
       console.error("Error in /test_reminder handler:", err);
       await ctx.reply("Произошла ошибка при запуске теста.");
