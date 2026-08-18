@@ -7,6 +7,7 @@ import { findBestMatchingTask } from "@/lib/utils/matching";
 import { calculateRemindAt } from "@/services/reminders/calculator";
 import { ParsedTaskResult, Task, TaskInputType } from "@/types";
 import { addMinutes } from "date-fns";
+import { formatInTimeZone } from "date-fns-tz";
 import crypto from "crypto";
 
 const token = process.env.TELEGRAM_BOT_TOKEN || "placeholder_token";
@@ -394,17 +395,21 @@ export function setupBot(botInstance: Bot = bot) {
       }
 
       const now = new Date();
-      // Deadline: Current time + 45 minutes + 7 seconds
-      const deadline = new Date(now.getTime() + (45 * 60 + 7) * 1000).toISOString();
-      // Remind at: Current time + 7 seconds
-      const remindAt = new Date(now.getTime() + 7 * 1000).toISOString();
+      const bufferMins = profile.reminder_buffer_minutes || 20;
+      const durationMins = 15;
+
+      // Remind at: NOW + 20 seconds
+      const remindAt = new Date(now.getTime() + 20 * 1000).toISOString();
+      // Deadline: NOW + (buffer + duration) + 20 seconds = NOW + 35 minutes + 20 seconds
+      const deadline = new Date(now.getTime() + ((bufferMins + durationMins) * 60 + 20) * 1000).toISOString();
+
       const userTimezone = profile.timezone || "Europe/Chisinau";
       const formattedDeadline = formatDeadline(deadline, userTimezone);
+      const formattedRemindAt = formatInTimeZone(remindAt, userTimezone, "HH:mm:ss");
 
       const title = "Тестовая задача (Test task)";
-      const durationMins = 20;
 
-      const { data: insertedTask, error: dbError } = await admin
+      const { error: dbError } = await admin
         .from("tasks")
         .insert({
           user_id: profile.id,
@@ -417,11 +422,9 @@ export function setupBot(botInstance: Bot = bot) {
           source: "telegram",
           input_type: "manual",
           original_input: "/test_reminder",
-        })
-        .select()
-        .single();
+        });
 
-      if (dbError || !insertedTask) {
+      if (dbError) {
         console.error("DB error in test_reminder:", dbError);
         await ctx.reply("Ошибка при создании тестовой задачи.");
         return;
@@ -431,41 +434,11 @@ export function setupBot(botInstance: Bot = bot) {
         `🧪 <b>Создана тестовая задача!</b>\n\n` +
           `📌 <b>${escapeHtml(title)}</b>\n` +
           `⏱ Дедлайн: <b>${escapeHtml(formattedDeadline)}</b>\n` +
-          `⏳ Время на выполнение: <b>20 мин</b>\n` +
-          `⏰ Напоминание в базе (remind_at): <b>через 7 сек</b>\n\n` +
-          `🔔 <i>Напоминание придёт ровно через <b>7 секунд</b>...</i>`,
+          `⏳ Время на выполнение: <b>${durationMins} мин</b>\n` +
+          `⏰ Буфер напоминания: <b>${bufferMins} мин</b>\n\n` +
+          `🔔 <b>Напоминание (remind_at):</b> в <code>${formattedRemindAt}</code> (через 20 сек)`,
         { parse_mode: "HTML" }
       );
-
-      // Keep serverless function alive and send after exactly 7 seconds
-      await new Promise((resolve) => setTimeout(resolve, 7000));
-
-      const { data: currentTask } = await admin
-        .from("tasks")
-        .select("*")
-        .eq("id", insertedTask.id)
-        .single();
-
-      if (currentTask && !currentTask.completed && !currentTask.reminder_sent) {
-        const keyboard = new InlineKeyboard()
-          .text("✅ Сделано", `rem_done:${currentTask.id}`)
-          .text("⏱ +30 мин", `rem_snooze:${currentTask.id}`);
-
-        const reminderMsg =
-          `🔔 <b>Подготовка к задаче!</b>\n\n` +
-          `📌 <b>${escapeHtml(currentTask.title)}</b>\n` +
-          `⏱ Дедлайн: <b>${escapeHtml(formattedDeadline)}</b>\n\n` +
-          `⏳ <i>Тайминг:</i>\n` +
-          `• Через <b>25 мин</b> пора приступить к работе.\n` +
-          `• Оценка задачи: <b>~${durationMins} мин</b>.`;
-
-        await bot.api.sendMessage(telegramUserId, reminderMsg, {
-          parse_mode: "HTML",
-          reply_markup: keyboard,
-        });
-
-        await admin.from("tasks").update({ reminder_sent: true }).eq("id", currentTask.id);
-      }
     } catch (err) {
       console.error("Error in /test_reminder handler:", err);
       await ctx.reply("Произошла ошибка при запуске теста.");
