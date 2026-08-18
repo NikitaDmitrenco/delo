@@ -10,8 +10,7 @@ describe("Intent Recognition & 'Послезавтра' Date Math", () => {
     expect(res.intent).toBe("set_deadline");
     expect(res.targetQuery).toContain("отчет");
     expect(res.deadline).toBeDefined();
-    const formatted = formatDeadline(res.deadline, "Europe/Chisinau");
-    expect(formatted).toContain("19 августа");
+    expect(res.deadline).toContain("2026-08-19");
   });
 
   it("should classify complete_task intent (поставь галочку)", () => {

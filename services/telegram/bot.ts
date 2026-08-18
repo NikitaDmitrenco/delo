@@ -361,6 +361,104 @@ export function setupBot(botInstance: Bot = bot) {
     }
   });
 
+  // Command: /test_reminder (Developer testing command)
+  botInstance.command("test_reminder", async (ctx) => {
+    const from = ctx.from;
+    if (!from) return;
+
+    const telegramUserId = from.id;
+    const admin = createAdminClient();
+
+    try {
+      const profile = await findProfile(telegramUserId);
+      if (!profile) {
+        await ctx.reply("Сначала привяжите аккаунт через /start.");
+        return;
+      }
+
+      const now = new Date();
+      // Deadline: Current time + 45 minutes + 20 seconds
+      const deadline = new Date(now.getTime() + (45 * 60 + 20) * 1000).toISOString();
+      // Remind at: Current time + 20 seconds
+      const remindAt = new Date(now.getTime() + 20 * 1000).toISOString();
+      const userTimezone = profile.timezone || "Europe/Chisinau";
+      const formattedDeadline = formatDeadline(deadline, userTimezone);
+
+      const title = "Тестовая задача (Test task)";
+      const durationMins = 20;
+
+      const { data: insertedTask, error: dbError } = await admin
+        .from("tasks")
+        .insert({
+          user_id: profile.id,
+          title: title,
+          deadline: deadline,
+          estimated_duration_minutes: durationMins,
+          remind_at: remindAt,
+          reminder_sent: false,
+          completed: false,
+          source: "telegram",
+          input_type: "manual",
+          original_input: "/test_reminder",
+        })
+        .select()
+        .single();
+
+      if (dbError || !insertedTask) {
+        console.error("DB error in test_reminder:", dbError);
+        await ctx.reply("Ошибка при создании тестовой задачи.");
+        return;
+      }
+
+      await ctx.reply(
+        `🧪 <b>Создана тестовая задача!</b>\n\n` +
+          `📌 <b>${escapeHtml(title)}</b>\n` +
+          `⏱ Дедлайн: <b>${escapeHtml(formattedDeadline)}</b>\n` +
+          `⏳ Время на выполнение: <b>20 мин</b>\n` +
+          `⏰ Напоминание в базе (remind_at): <b>через 20 сек</b>\n\n` +
+          `🔔 <i>Напоминание придёт ровно через <b>20 секунд</b>...</i>`,
+        { parse_mode: "HTML" }
+      );
+
+      // Trigger automatic delivery in 20 seconds
+      setTimeout(async () => {
+        try {
+          const { data: currentTask } = await admin
+            .from("tasks")
+            .select("*")
+            .eq("id", insertedTask.id)
+            .single();
+
+          if (currentTask && !currentTask.completed && !currentTask.reminder_sent) {
+            const keyboard = new InlineKeyboard()
+              .text("✅ Сделано", `rem_done:${currentTask.id}`)
+              .text("⏱ +30 мин", `rem_snooze:${currentTask.id}`);
+
+            const reminderMsg =
+              `🔔 <b>Подготовка к задаче!</b>\n\n` +
+              `📌 <b>${escapeHtml(currentTask.title)}</b>\n` +
+              `⏱ Дедлайн: <b>${escapeHtml(formattedDeadline)}</b>\n\n` +
+              `⏳ <i>Тайминг:</i>\n` +
+              `• Через <b>25 мин</b> пора приступить к работе.\n` +
+              `• Оценка задачи: <b>~${durationMins} мин</b>.`;
+
+            await bot.api.sendMessage(telegramUserId, reminderMsg, {
+              parse_mode: "HTML",
+              reply_markup: keyboard,
+            });
+
+            await admin.from("tasks").update({ reminder_sent: true }).eq("id", currentTask.id);
+          }
+        } catch (timerErr) {
+          console.error("Error in test_reminder timeout delivery:", timerErr);
+        }
+      }, 20000);
+    } catch (err) {
+      console.error("Error in /test_reminder handler:", err);
+      await ctx.reply("Произошла ошибка при запуске теста.");
+    }
+  });
+
   // Contact sharing handler: automatic phone verification and matching with database
   botInstance.on("message:contact", async (ctx) => {
     const from = ctx.from;
