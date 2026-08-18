@@ -12,7 +12,24 @@ import crypto from "crypto";
 const token = process.env.TELEGRAM_BOT_TOKEN || "placeholder_token";
 const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://delo-dusky.vercel.app";
 
-export const bot = new Bot(token);
+export const bot = new Bot(token, {
+  botInfo: {
+    id: 8699808653,
+    is_bot: true,
+    first_name: "Delo",
+    username: "delo_task_bot",
+    can_join_groups: true,
+    can_read_all_group_messages: false,
+    supports_inline_queries: false,
+    supports_guest_queries: false,
+    can_connect_to_business: false,
+    has_main_web_app: false,
+    has_topics_enabled: false,
+    allows_users_to_create_topics: false,
+    can_manage_bots: false,
+    supports_join_request_queries: false,
+  },
+});
 
 /**
  * Escapes HTML characters for safe Telegram HTML formatting.
