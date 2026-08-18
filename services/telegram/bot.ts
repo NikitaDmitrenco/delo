@@ -394,10 +394,10 @@ export function setupBot(botInstance: Bot = bot) {
       }
 
       const now = new Date();
-      // Deadline: Current time + 45 minutes + 20 seconds
-      const deadline = new Date(now.getTime() + (45 * 60 + 20) * 1000).toISOString();
-      // Remind at: Current time + 20 seconds
-      const remindAt = new Date(now.getTime() + 20 * 1000).toISOString();
+      // Deadline: Current time + 45 minutes + 7 seconds
+      const deadline = new Date(now.getTime() + (45 * 60 + 7) * 1000).toISOString();
+      // Remind at: Current time + 7 seconds
+      const remindAt = new Date(now.getTime() + 7 * 1000).toISOString();
       const userTimezone = profile.timezone || "Europe/Chisinau";
       const formattedDeadline = formatDeadline(deadline, userTimezone);
 
@@ -432,13 +432,13 @@ export function setupBot(botInstance: Bot = bot) {
           `📌 <b>${escapeHtml(title)}</b>\n` +
           `⏱ Дедлайн: <b>${escapeHtml(formattedDeadline)}</b>\n` +
           `⏳ Время на выполнение: <b>20 мин</b>\n` +
-          `⏰ Напоминание в базе (remind_at): <b>через 20 сек</b>\n\n` +
-          `🔔 <i>Напоминание придёт ровно через <b>20 секунд</b>...</i>`,
+          `⏰ Напоминание в базе (remind_at): <b>через 7 сек</b>\n\n` +
+          `🔔 <i>Напоминание придёт ровно через <b>7 секунд</b>...</i>`,
         { parse_mode: "HTML" }
       );
 
-      // Keep serverless function alive and send after exactly 20 seconds
-      await new Promise((resolve) => setTimeout(resolve, 20000));
+      // Keep serverless function alive and send after exactly 7 seconds
+      await new Promise((resolve) => setTimeout(resolve, 7000));
 
       const { data: currentTask } = await admin
         .from("tasks")
